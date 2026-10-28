@@ -522,6 +522,30 @@ const sidebars: SidebarsConfig = {
         },
         {
           type: 'category',
+          label: 'Account Protection',
+          collapsed: true,
+          collapsible: true,
+          items: [
+            {
+              type: 'doc',
+              id: 'guides/account-protection/overview',
+              label: 'Overview',
+              key: 'account-protection-overview',
+            },
+            {
+              type: 'doc',
+              id: 'guides/account-protection/configure-account-lockout',
+              label: 'Configure Account Lockout',
+            },
+            {
+              type: 'doc',
+              id: 'guides/account-protection/suspend-and-restore-accounts',
+              label: 'Suspend and Restore Accounts',
+            },
+          ],
+        },
+        {
+          type: 'category',
           label: 'MCP',
           key: 'guides-mcp',
           collapsed: true,
@@ -1010,6 +1034,11 @@ const sidebars: SidebarsConfig = {
                       type: 'doc',
                       id: 'guides/protocols/oauth-oidc/rp-initiated-logout',
                       label: 'RP-Initiated Logout',
+                    },
+                    {
+                      type: 'doc',
+                      id: 'guides/protocols/oauth-oidc/backchannel-logout',
+                      label: 'Back-Channel Logout',
                     },
                     {type: 'doc', id: 'guides/protocols/oauth-oidc/userinfo', label: 'UserInfo'},
                     {type: 'doc', id: 'guides/protocols/oauth-oidc/claims-and-scopes', label: 'Claims & Scopes'},

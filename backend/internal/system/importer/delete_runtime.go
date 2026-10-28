@@ -180,6 +180,10 @@ func (s *importService) deleterFor(resourceType string) deleteFunc {
 		if s.resourceService != nil {
 			return s.resourceService.DeleteResourceServer
 		}
+	case resourceTypeAuthorizationDetailType:
+		if s.authorizationDetailTypeService != nil {
+			return s.authorizationDetailTypeService.DeleteAuthorizationDetailType
+		}
 	case resourceTypeTheme:
 		if s.themeService != nil {
 			return s.themeService.DeleteTheme
@@ -196,6 +200,16 @@ func (s *importService) deleterFor(resourceType string) deleteFunc {
 		if s.agentService != nil {
 			return s.agentService.DeleteAgent
 		}
+	case resourceTypePresentationDefinition, resourceTypeCredentialConfiguration:
+		return s.verifiableCredentialDeleterFor(resourceType)
+	}
+	return nil
+}
+
+// verifiableCredentialDeleterFor returns the delete for a verifiable credential resource type, or nil when
+// the deployment was not configured with its adapter.
+func (s *importService) verifiableCredentialDeleterFor(resourceType string) deleteFunc {
+	switch resourceType {
 	case resourceTypePresentationDefinition:
 		if s.presentationDefinitionService != nil {
 			return s.presentationDefinitionService.DeletePresentationDefinition
@@ -222,7 +236,8 @@ func (s *importService) entityTypeDeleter(resourceType string) deleteFunc {
 
 // hasConnectionAdapter reports whether any of the services a connection can be held by is configured.
 func (s *importService) hasConnectionAdapter() bool {
-	return s.idpService != nil || s.senderService != nil || s.authZENPDPService != nil
+	return s.idpService != nil || s.senderService != nil || s.authZENPDPService != nil ||
+		s.httpConnectionService != nil
 }
 
 // deleteConnection removes a connection from whichever service holds it, as importConnection writes
@@ -265,6 +280,17 @@ func (s *importService) deleteConnection(ctx context.Context, id string) *tidcom
 		if pdpConnection != nil {
 			return s.authZENPDPService.DeleteAuthZENPDPConnection(ctx, id)
 		}
+	}
+
+	if s.httpConnectionService != nil {
+		_, svcErr := s.httpConnectionService.GetHTTPConnection(ctx, id)
+		if svcErr == nil {
+			return s.httpConnectionService.DeleteHTTPConnection(ctx, id)
+		}
+		if !isNotFoundServiceError(svcErr) {
+			return svcErr
+		}
+		absent = svcErr
 	}
 
 	return absent

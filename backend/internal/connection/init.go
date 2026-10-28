@@ -16,23 +16,27 @@ import (
 	"github.com/thunder-id/thunderid/internal/resource"
 	declarativeresource "github.com/thunder-id/thunderid/internal/system/declarative_resource"
 	"github.com/thunder-id/thunderid/internal/system/middleware"
+	"github.com/thunder-id/thunderid/internal/system/resourcedependency"
 	"github.com/thunder-id/thunderid/pkg/thunderidengine/providers"
 )
 
 // Initialize wires the connection service over the identity-provider and notification-sender
 // services, registers the /connections routes, loads declarative connection resources, and
-// returns the connection exporter for the export API. Given an MCP server, it also registers the
-// HTTP endpoint connection tools.
+// returns the connection exporter for the export API and the provider of the connections that block the deletion of
+// the organization unit that owns them. Given an MCP server, it also registers the HTTP endpoint connection tools.
+//
+// A declarative connection names its owner, and the service of its kind resolves and checks it.
 //
 // valueCapturer is optional. Given one, the service hands it every connection it creates or changes,
-// so the values the connection's export refers to are kept where a reference finds them.
+// so the values the connection's export refers to are kept where a reference finds them. It also
+// returns the HTTP connection writer.
 func Initialize(mux *http.ServeMux, mcpServer *mcp.Server, idpService idp.IDPServiceInterface,
 	notificationService notification.NotificationSenderMgtSvcInterface,
 	resourceService resource.ResourceServiceInterface,
 	authZENPDPService authzenpdp.AuthZENPDPServiceInterface,
 	httpService httpconnection.HTTPConnectionServiceInterface,
 	valueCapturer declarativeresource.ValueCapturer) (
-	declarativeresource.ResourceExporter, error) {
+	declarativeresource.ResourceExporter, resourcedependency.Provider, HTTPConnectionWriterInterface, error) {
 	svc := newService(idpService, notificationService, resourceService, authZENPDPService, httpService)
 	svc.valueCapturer = valueCapturer
 	h := newHandler(svc)
@@ -42,11 +46,13 @@ func Initialize(mux *http.ServeMux, mcpServer *mcp.Server, idpService idp.IDPSer
 		registerMCPTools(mcpServer, svc)
 	}
 
-	if err := loadDeclarativeResources(idpService); err != nil {
-		return nil, err
+	if err := loadDeclarativeResources(idpService, notificationService, authZENPDPService, httpService); err != nil {
+		return nil, nil, nil, err
 	}
 
-	return newConnectionExporter(idpService, notificationService, authZENPDPService), nil
+	return newConnectionExporter(idpService, notificationService, authZENPDPService, httpService),
+		newOUDependencyProvider(idpService, notificationService, authZENPDPService, httpService),
+		&httpConnectionWriter{svc: svc}, nil
 }
 
 func noContent(w http.ResponseWriter, _ *http.Request) {
@@ -156,14 +162,7 @@ func registerVendorRoutes(mux *http.ServeMux, h *handler, base string, idpType p
 	mux.HandleFunc(middleware.WithCORS("DELETE "+base+"/{id}", h.deleteInstance(idpType), itemOpts))
 	mux.HandleFunc(middleware.WithCORS("OPTIONS "+base+"/{id}", noContent, itemOpts))
 
-	usagesOpts := middleware.CORSOptions{
-		AllowedMethods:   []string{"GET"},
-		AllowedHeaders:   middleware.DefaultAllowedHeaders,
-		AllowCredentials: true,
-		MaxAge:           600,
-	}
-	mux.HandleFunc(middleware.WithCORS("GET "+base+"/{id}/usages", h.usagesInstance(idpType), usagesOpts))
-	mux.HandleFunc(middleware.WithCORS("OPTIONS "+base+"/{id}/usages", noContent, usagesOpts))
+	registerUsagesRoute(mux, base, h.usagesInstance(idpType))
 }
 
 // registerSenderVendorRoutes registers the collection (list/create) and item (get/update/delete)
@@ -185,15 +184,7 @@ func registerSenderVendorRoutes(mux *http.ServeMux, h *handler, base string,
 		h.deleteSenderInstance(senderType, provider), itemOpts))
 	mux.HandleFunc(middleware.WithCORS("OPTIONS "+base+"/{id}", noContent, itemOpts))
 
-	usagesOpts := middleware.CORSOptions{
-		AllowedMethods:   []string{"GET"},
-		AllowedHeaders:   middleware.DefaultAllowedHeaders,
-		AllowCredentials: true,
-		MaxAge:           600,
-	}
-	mux.HandleFunc(middleware.WithCORS("GET "+base+"/{id}/usages",
-		h.usagesSenderInstance(senderType, provider), usagesOpts))
-	mux.HandleFunc(middleware.WithCORS("OPTIONS "+base+"/{id}/usages", noContent, usagesOpts))
+	registerUsagesRoute(mux, base, h.usagesSenderInstance(senderType, provider))
 }
 
 // registerAuthZENPDPVendorRoutes registers CRUD, CORS, and usage routes for AuthZEN PDP connections.
@@ -213,17 +204,10 @@ func registerAuthZENPDPVendorRoutes(
 	mux.HandleFunc(middleware.WithCORS("DELETE "+base+"/{id}", h.deleteAuthZENPDPConnection, itemOpts))
 	mux.HandleFunc(middleware.WithCORS("OPTIONS "+base+"/{id}", noContent, itemOpts))
 
-	usagesOpts := middleware.CORSOptions{
-		AllowedMethods:   []string{"GET"},
-		AllowedHeaders:   middleware.DefaultAllowedHeaders,
-		AllowCredentials: true,
-		MaxAge:           600,
-	}
-	mux.HandleFunc(middleware.WithCORS("GET "+base+"/{id}/usages", h.usagesAuthZENPDPConnection, usagesOpts))
-	mux.HandleFunc(middleware.WithCORS("OPTIONS "+base+"/{id}/usages", noContent, usagesOpts))
+	registerUsagesRoute(mux, base, h.usagesAuthZENPDPConnection)
 }
 
-// registerHTTPConnectionRoutes registers CRUD and CORS routes for HTTP endpoint connections.
+// registerHTTPConnectionRoutes registers CRUD, CORS, and usage routes for HTTP endpoint connections.
 func registerHTTPConnectionRoutes(mux *http.ServeMux, h *handler, base string,
 	collectionOpts, itemOpts middleware.CORSOptions) {
 	mux.HandleFunc(middleware.WithCORS("GET "+base, h.listHTTPConnections, collectionOpts))
@@ -234,4 +218,19 @@ func registerHTTPConnectionRoutes(mux *http.ServeMux, h *handler, base string,
 	mux.HandleFunc(middleware.WithCORS("PUT "+base+"/{id}", h.updateHTTPConnection, itemOpts))
 	mux.HandleFunc(middleware.WithCORS("DELETE "+base+"/{id}", h.deleteHTTPConnection, itemOpts))
 	mux.HandleFunc(middleware.WithCORS("OPTIONS "+base+"/{id}", noContent, itemOpts))
+
+	registerUsagesRoute(mux, base, h.usagesHTTPConnection)
+}
+
+// registerUsagesRoute registers the GET and CORS routes that list the resources using an instance
+// under base.
+func registerUsagesRoute(mux *http.ServeMux, base string, usages http.HandlerFunc) {
+	usagesOpts := middleware.CORSOptions{
+		AllowedMethods:   []string{"GET"},
+		AllowedHeaders:   middleware.DefaultAllowedHeaders,
+		AllowCredentials: true,
+		MaxAge:           600,
+	}
+	mux.HandleFunc(middleware.WithCORS("GET "+base+"/{id}/usages", usages, usagesOpts))
+	mux.HandleFunc(middleware.WithCORS("OPTIONS "+base+"/{id}/usages", noContent, usagesOpts))
 }

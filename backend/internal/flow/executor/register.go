@@ -21,6 +21,7 @@ import (
 	"github.com/thunder-id/thunderid/internal/authn/oidc"
 	"github.com/thunder-id/thunderid/internal/authn/openid4vp"
 	"github.com/thunder-id/thunderid/internal/authn/otp"
+	"github.com/thunder-id/thunderid/internal/connection/httpconnection"
 	"github.com/thunder-id/thunderid/internal/entityprovider"
 	"github.com/thunder-id/thunderid/internal/entitytype"
 	"github.com/thunder-id/thunderid/internal/flow/core"
@@ -31,6 +32,7 @@ import (
 	"github.com/thunder-id/thunderid/internal/resource"
 	"github.com/thunder-id/thunderid/internal/revocation"
 	"github.com/thunder-id/thunderid/internal/role"
+	httpservice "github.com/thunder-id/thunderid/internal/system/http"
 	"github.com/thunder-id/thunderid/internal/system/jose/jwt"
 	"github.com/thunder-id/thunderid/internal/system/log"
 	"github.com/thunder-id/thunderid/internal/user"
@@ -129,6 +131,33 @@ func (r *executorRegistry) setActorProvider(provider providers.ActorProvider) {
 	}
 }
 
+// agentMgtProviderConsumerInterface is implemented by the executors that provision agents.
+type agentMgtProviderConsumerInterface interface {
+	setAgentMgtProvider(provider providers.AgentMgtProvider)
+}
+
+// SetAgentMgtProvider injects the agent provider into every registered executor that provisions
+// agents. The agent service behind it is built after the executors (agent -> inboundclient ->
+// flowmgt -> executor), so it cannot be passed to their constructors.
+func SetAgentMgtProvider(reg ExecutorRegistryInterface, provider providers.AgentMgtProvider) error {
+	registry, ok := reg.(*executorRegistry)
+	if !ok {
+		return fmt.Errorf("executor registry does not support agent provider injection")
+	}
+	registry.setAgentMgtProvider(provider)
+	return nil
+}
+
+func (r *executorRegistry) setAgentMgtProvider(provider providers.AgentMgtProvider) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, ex := range r.executors {
+		if consumer, ok := ex.(agentMgtProviderConsumerInterface); ok {
+			consumer.setAgentMgtProvider(provider)
+		}
+	}
+}
+
 // RegisterExecutor registers an executor instance.
 func (r *executorRegistry) RegisterExecutor(name string, exec providers.Executor) {
 	// Executors are registered at server startup, outside any request,
@@ -189,39 +218,42 @@ type artifactLifetimeResolver func(client *providers.OAuthClient) time.Duration
 
 // ExecutorDependencies holds service dependencies required to construct built-in executors.
 type ExecutorDependencies struct {
-	FlowFactory           core.FlowFactoryInterface
-	OUService             providers.OrganizationUnitProvider
-	IDPService            providers.IDPProvider
-	NotifSenderSvc        notification.NotificationSenderServiceInterface
-	JWTService            jwt.JWTServiceInterface
-	AuthAssertGen         assert.AuthAssertGeneratorInterface
-	ConsentEnforcer       providers.ConsentProvider
-	AuthnProvider         providers.AuthnProviderManager
-	OTPService            otp.OTPAuthnServiceInterface
-	MagicLinkService      magiclink.MagicLinkAuthnServiceInterface
-	AuthZService          providers.AuthorizationProvider
-	EntityTypeService     entitytype.EntityTypeServiceInterface
-	GroupService          group.GroupServiceInterface
-	RoleService           role.RoleServiceInterface
-	RoleAssignmentService role.RoleAssignmentServiceInterface
-	EntityProvider        entityprovider.EntityProviderInterface
-	UserMgtProvider       providers.UserMgtProvider
-	AgentMgtProvider      providers.AgentMgtProvider
-	AttributeCacheSvc     attributecache.AttributeCacheServiceInterface
-	TemplateRenderer      notificationtemplate.TemplateRendererInterface
-	OAuthSvc              oauth.OAuthAuthnServiceInterface
-	OIDCSvc               oidc.OIDCAuthnServiceInterface
-	GithubSvc             github.GithubOAuthAuthnServiceInterface
-	GoogleSvc             google.GoogleOIDCAuthnServiceInterface
-	OpenID4VPVerifierSvc  openid4vp.OpenID4VPServiceInterface
-	SessionService        session.Service
-	ResourceService       providers.ResourceServerProvider
-	UserService           user.UserServiceInterface
-	CriteriaRevoker       revocation.CriteriaRevoker
-	ResourceMgtService    resource.ResourceServiceInterface
-	IdentityGovernance    providers.IdentityGovernanceProvider
-	ArtifactLifetime      artifactLifetimeResolver
-	tokenLeeway           time.Duration
+	FlowFactory            core.FlowFactoryInterface
+	OUService              providers.OrganizationUnitProvider
+	IDPService             providers.IDPProvider
+	NotifSenderSvc         notification.NotificationSenderServiceInterface
+	JWTService             jwt.JWTServiceInterface
+	AuthAssertGen          assert.AuthAssertGeneratorInterface
+	ConsentEnforcer        providers.ConsentProvider
+	AuthnProvider          providers.AuthnProviderManager
+	OTPService             otp.OTPAuthnServiceInterface
+	MagicLinkService       magiclink.MagicLinkAuthnServiceInterface
+	AuthZService           providers.AuthorizationProvider
+	EntityTypeService      entitytype.EntityTypeServiceInterface
+	GroupService           group.GroupServiceInterface
+	RoleService            role.RoleServiceInterface
+	RoleAssignmentService  role.RoleAssignmentServiceInterface
+	EntityProvider         entityprovider.EntityProviderInterface
+	UserMgtProvider        providers.UserMgtProvider
+	AgentMgtProvider       providers.AgentMgtProvider
+	AttributeCacheSvc      attributecache.AttributeCacheServiceInterface
+	TemplateRenderer       notificationtemplate.TemplateRendererInterface
+	OAuthSvc               oauth.OAuthAuthnServiceInterface
+	OIDCSvc                oidc.OIDCAuthnServiceInterface
+	GithubSvc              github.GithubOAuthAuthnServiceInterface
+	GoogleSvc              google.GoogleOIDCAuthnServiceInterface
+	OpenID4VPVerifierSvc   openid4vp.OpenID4VPServiceInterface
+	SessionService         session.Service
+	ResourceService        providers.ResourceServerProvider
+	UserService            user.UserServiceInterface
+	CriteriaRevoker        revocation.CriteriaRevoker
+	ResourceMgtService     resource.ResourceServiceInterface
+	HTTPConnectionProvider httpconnection.HTTPConnectionProvider
+	ExtensionHTTPClient    httpservice.HTTPClientInterface
+	ObservabilitySvc       providers.ObservabilityProvider
+	IdentityGovernance     providers.IdentityGovernanceProvider
+	ArtifactLifetime       artifactLifetimeResolver
+	tokenLeeway            time.Duration
 }
 
 type builtInExecutorRegistrar func(ExecutorRegistryInterface, ExecutorDependencies)
@@ -413,6 +445,11 @@ func newBuiltInExecutorRegistrars() map[string]builtInExecutorRegistrar {
 		ExecutorNameClientSecret: func(reg ExecutorRegistryInterface, deps ExecutorDependencies) {
 			reg.RegisterExecutor(ExecutorNameClientSecret,
 				newClientSecretExecutor(deps.FlowFactory))
+		},
+		ExecutorNameExtension: func(reg ExecutorRegistryInterface, deps ExecutorDependencies) {
+			reg.RegisterExecutor(ExecutorNameExtension,
+				newExtensionExecutor(deps.FlowFactory, deps.HTTPConnectionProvider, deps.ExtensionHTTPClient,
+					deps.ObservabilitySvc))
 		},
 		ExecutorNameAccountLinking: func(reg ExecutorRegistryInterface, deps ExecutorDependencies) {
 			reg.RegisterExecutor(ExecutorNameAccountLinking,

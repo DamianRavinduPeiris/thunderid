@@ -11,9 +11,12 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/suite"
 
+	"github.com/thunder-id/thunderid/internal/connection/httpconnection"
 	"github.com/thunder-id/thunderid/internal/flow/common"
 	"github.com/thunder-id/thunderid/internal/flow/executor"
+	"github.com/thunder-id/thunderid/internal/flow/executormeta"
 	"github.com/thunder-id/thunderid/internal/flow/interceptor"
+	tidcommon "github.com/thunder-id/thunderid/pkg/thunderidengine/common"
 	"github.com/thunder-id/thunderid/pkg/thunderidengine/providers"
 	"github.com/thunder-id/thunderid/tests/mocks/flow/executormock"
 	"github.com/thunder-id/thunderid/tests/mocks/flow/interceptormock"
@@ -56,6 +59,7 @@ type ValidatorTestSuite struct {
 	mockExecutorRegistry    *executormock.ExecutorRegistryInterfaceMock
 	mockInterceptorRegistry *interceptormock.InterceptorRegistryInterfaceMock
 	mockGraphBuilder        *graphBuilderInterfaceMock
+	mockConnections         *httpConnectionProviderMock
 }
 
 func TestValidatorTestSuite(t *testing.T) {
@@ -66,11 +70,9 @@ func (s *ValidatorTestSuite) SetupTest() {
 	s.mockExecutorRegistry = executormock.NewExecutorRegistryInterfaceMock(s.T())
 	s.mockInterceptorRegistry = interceptormock.NewInterceptorRegistryInterfaceMock(s.T())
 	s.mockGraphBuilder = newGraphBuilderInterfaceMock(s.T())
-	s.v = &flowValidator{
-		executorRegistry:    s.mockExecutorRegistry,
-		interceptorRegistry: s.mockInterceptorRegistry,
-		graphBuilder:        s.mockGraphBuilder,
-	}
+	s.mockConnections = newHttpConnectionProviderMock(s.T())
+	s.v = newFlowValidator(s.mockExecutorRegistry, s.mockInterceptorRegistry, s.mockGraphBuilder,
+		s.mockConnections)
 }
 
 // ---------------------------------------------------------------------------
@@ -145,7 +147,7 @@ func (s *ValidatorTestSuite) TestIsValidFlowType_InvalidTypes() {
 // ---------------------------------------------------------------------------
 
 func (s *ValidatorTestSuite) TestValidateMetadata_NilFlowDef() {
-	err := s.v.validateMetadata(nil)
+	err := s.v.validateMetadata(nil, isValidFlowType)
 	s.Require().NotNil(err)
 	s.Equal(ErrorInvalidRequestFormat.Code, err.Code)
 }
@@ -153,7 +155,7 @@ func (s *ValidatorTestSuite) TestValidateMetadata_NilFlowDef() {
 func (s *ValidatorTestSuite) TestValidateMetadata_MissingHandle() {
 	fd := minimalValidFlow()
 	fd.Handle = ""
-	err := s.v.validateMetadata(fd)
+	err := s.v.validateMetadata(fd, isValidFlowType)
 	s.Require().NotNil(err)
 	s.Equal(ErrorMissingFlowHandle.Code, err.Code)
 }
@@ -161,7 +163,7 @@ func (s *ValidatorTestSuite) TestValidateMetadata_MissingHandle() {
 func (s *ValidatorTestSuite) TestValidateMetadata_InvalidHandleFormat() {
 	fd := minimalValidFlow()
 	fd.Handle = "-invalid"
-	err := s.v.validateMetadata(fd)
+	err := s.v.validateMetadata(fd, isValidFlowType)
 	s.Require().NotNil(err)
 	s.Equal(ErrorInvalidFlowHandleFormat.Code, err.Code)
 }
@@ -169,7 +171,7 @@ func (s *ValidatorTestSuite) TestValidateMetadata_InvalidHandleFormat() {
 func (s *ValidatorTestSuite) TestValidateMetadata_MissingName() {
 	fd := minimalValidFlow()
 	fd.Name = ""
-	err := s.v.validateMetadata(fd)
+	err := s.v.validateMetadata(fd, isValidFlowType)
 	s.Require().NotNil(err)
 	s.Equal(ErrorMissingFlowName.Code, err.Code)
 }
@@ -177,7 +179,7 @@ func (s *ValidatorTestSuite) TestValidateMetadata_MissingName() {
 func (s *ValidatorTestSuite) TestValidateMetadata_InvalidFlowType() {
 	fd := minimalValidFlow()
 	fd.FlowType = "UNKNOWN"
-	err := s.v.validateMetadata(fd)
+	err := s.v.validateMetadata(fd, isValidFlowType)
 	s.Require().NotNil(err)
 	s.Equal(ErrorInvalidFlowType.Code, err.Code)
 }
@@ -185,7 +187,7 @@ func (s *ValidatorTestSuite) TestValidateMetadata_InvalidFlowType() {
 func (s *ValidatorTestSuite) TestValidateMetadata_InvalidIDFormat() {
 	fd := minimalValidFlow()
 	fd.ID = "not-a-uuid"
-	err := s.v.validateMetadata(fd)
+	err := s.v.validateMetadata(fd, isValidFlowType)
 	s.Require().NotNil(err)
 	s.Equal(ErrorInvalidFlowIDFormat.Code, err.Code)
 }
@@ -193,7 +195,7 @@ func (s *ValidatorTestSuite) TestValidateMetadata_InvalidIDFormat() {
 func (s *ValidatorTestSuite) TestValidateMetadata_ValidID() {
 	fd := minimalValidFlow()
 	fd.ID = "550e8400-e29b-41d4-a716-446655440000"
-	err := s.v.validateMetadata(fd)
+	err := s.v.validateMetadata(fd, isValidFlowType)
 	s.Nil(err)
 }
 
@@ -202,7 +204,7 @@ func (s *ValidatorTestSuite) TestValidateMetadata_TooFewNodes_One() {
 	fd.Nodes = []providers.NodeDefinition{
 		{ID: "start", Type: string(common.NodeTypeStart)},
 	}
-	err := s.v.validateMetadata(fd)
+	err := s.v.validateMetadata(fd, isValidFlowType)
 	s.Require().NotNil(err)
 	s.Equal(ErrorInvalidFlowData.Code, err.Code)
 }
@@ -213,13 +215,13 @@ func (s *ValidatorTestSuite) TestValidateMetadata_TooFewNodes_Two() {
 		{ID: "start", Type: string(common.NodeTypeStart)},
 		{ID: "end", Type: string(common.NodeTypeEnd)},
 	}
-	err := s.v.validateMetadata(fd)
+	err := s.v.validateMetadata(fd, isValidFlowType)
 	s.Require().NotNil(err)
 	s.Equal(ErrorInvalidFlowData.Code, err.Code)
 }
 
 func (s *ValidatorTestSuite) TestValidateMetadata_Valid() {
-	err := s.v.validateMetadata(minimalValidFlow())
+	err := s.v.validateMetadata(minimalValidFlow(), isValidFlowType)
 	s.Nil(err)
 }
 
@@ -1157,6 +1159,121 @@ func (s *ValidatorTestSuite) TestValidateFlowDefinition_Valid() {
 	s.Nil(err)
 }
 
+// extensionFlow returns a minimal flow whose task is an extension step with the given properties.
+func extensionFlow(properties map[string]interface{}) *FlowDefinition {
+	fd := minimalValidFlow()
+	fd.Nodes[1].Executor = &providers.ExecutorDefinition{Name: executormeta.ExecutorNameExtension}
+	fd.Nodes[1].Properties = properties
+	return fd
+}
+
+// expectExtensionMeta registers the extension executor with its catalog metadata.
+func (s *ValidatorTestSuite) expectExtensionMeta() {
+	meta, ok := executormeta.MetaFor(executormeta.ExecutorNameExtension)
+	s.Require().True(ok)
+	s.mockExecutorRegistry.EXPECT().IsRegistered(executormeta.ExecutorNameExtension).Return(true)
+	s.mockExecutorRegistry.EXPECT().GetExecutorMeta(executormeta.ExecutorNameExtension).Return(&meta, nil)
+}
+
+func (s *ValidatorTestSuite) TestValidateFlowDefinition_ExtensionStepWithAnExistingConnection() {
+	for name, connectionID := range map[string]string{"exact": "conn-1", "padded": "  conn-1\t"} {
+		s.Run(name, func() {
+			s.SetupTest()
+			s.expectExtensionMeta()
+			s.mockConnections.EXPECT().GetHTTPConnection(mock.Anything, "conn-1").
+				Return(&httpconnection.HTTPConnection{ID: "conn-1"}, nil)
+			s.mockGraphBuilder.EXPECT().ValidateGraph(mock.Anything, mock.Anything).Return(nil)
+
+			err := s.v.ValidateFlowDefinition(context.Background(), extensionFlow(map[string]interface{}{
+				common.NodePropertyConnectionID:    connectionID,
+				common.NodePropertyInputKeys:       []interface{}{"username"},
+				common.NodePropertyRuntimeDataKeys: []interface{}{"extension.risk_check.riskScore"},
+				common.NodePropertyResponseKeys:    "riskScore, challengeId",
+				common.NodePropertyMaxAttempts:     float64(20),
+			}))
+
+			s.Nil(err)
+		})
+	}
+}
+
+func (s *ValidatorTestSuite) TestValidateFlowDefinition_ExtensionStepWithAMissingConnectionIsRefused() {
+	for name, connectionID := range map[string]string{"exact": "conn-gone", "padded": " conn-gone "} {
+		s.Run(name, func() {
+			s.SetupTest()
+			s.expectExtensionMeta()
+			s.mockConnections.EXPECT().GetHTTPConnection(mock.Anything, "conn-gone").
+				Return(nil, &httpconnection.ErrorNotFound)
+
+			err := s.v.ValidateFlowDefinition(context.Background(),
+				extensionFlow(map[string]interface{}{common.NodePropertyConnectionID: connectionID}))
+
+			s.Require().NotNil(err)
+			s.Equal(ErrorInvalidExecutorConfig.Code, err.Code)
+			s.Equal(map[string]string{
+				"nodeID":       "task",
+				"connectionID": "conn-gone",
+				"propertyKey":  common.NodePropertyConnectionID,
+			}, err.ErrorDescription.Params)
+		})
+	}
+}
+
+func (s *ValidatorTestSuite) TestValidateFlowDefinition_ExtensionConnectionLookupFailureRefusesTheSave() {
+	s.expectExtensionMeta()
+	s.mockConnections.EXPECT().GetHTTPConnection(mock.Anything, "conn-1").
+		Return(nil, &tidcommon.InternalServerError)
+
+	err := s.v.ValidateFlowDefinition(context.Background(),
+		extensionFlow(map[string]interface{}{common.NodePropertyConnectionID: "conn-1"}))
+
+	s.Require().NotNil(err)
+	s.Equal(tidcommon.InternalServerError.Code, err.Code)
+}
+
+func (s *ValidatorTestSuite) TestValidateFlowDefinition_ExtensionStepWithAnUnusablePropertyIsRefused() {
+	cases := []struct {
+		name     string
+		property string
+		value    interface{}
+	}{
+		{"blank connection", common.NodePropertyConnectionID, "   "},
+		{"empty input keys", common.NodePropertyInputKeys, []interface{}{}},
+		{"blank input key", common.NodePropertyInputKeys, []interface{}{"username", ""}},
+		{"non-string input key", common.NodePropertyInputKeys, []interface{}{1}},
+		{"input keys as a string", common.NodePropertyInputKeys, "username"},
+		{"empty runtime data keys", common.NodePropertyRuntimeDataKeys, []interface{}{}},
+		{"blank runtime data key", common.NodePropertyRuntimeDataKeys, []interface{}{" "}},
+		{"non-string runtime data key", common.NodePropertyRuntimeDataKeys, []interface{}{false}},
+		{"runtime data key outside the allow list", common.NodePropertyRuntimeDataKeys,
+			[]interface{}{"userID", "clientId"}},
+		{"runtime data key a credential", common.NodePropertyRuntimeDataKeys, []interface{}{"password"}},
+		{"empty response keys", common.NodePropertyResponseKeys, []interface{}{}},
+		{"blank response key", common.NodePropertyResponseKeys, []interface{}{"riskScore", " "}},
+		{"non-string response key", common.NodePropertyResponseKeys, []interface{}{2}},
+		{"empty response keys string", common.NodePropertyResponseKeys, ""},
+		{"max attempts zero", common.NodePropertyMaxAttempts, float64(0)},
+		{"max attempts 21", common.NodePropertyMaxAttempts, float64(21)},
+		{"max attempts fractional", common.NodePropertyMaxAttempts, 1.5},
+		{"max attempts a string", common.NodePropertyMaxAttempts, "5"},
+	}
+	for _, tc := range cases {
+		s.Run(tc.name, func() {
+			s.SetupTest()
+			s.expectExtensionMeta()
+			properties := map[string]interface{}{common.NodePropertyConnectionID: "conn-1"}
+			properties[tc.property] = tc.value
+
+			err := s.v.ValidateFlowDefinition(context.Background(), extensionFlow(properties))
+
+			s.Require().NotNil(err)
+			s.Equal(ErrorInvalidExecutorConfig.Code, err.Code)
+			s.Equal(tc.property, err.ErrorDescription.Params["propertyKey"])
+			s.mockConnections.AssertNotCalled(s.T(), "GetHTTPConnection", mock.Anything, mock.Anything)
+		})
+	}
+}
+
 // A linking node that sits between the federated executor and provisioning with no onIncomplete has
 // nowhere to send a matched candidate for verification, so the flow fails to save.
 func (s *ValidatorTestSuite) TestValidateFlowDefinition_LinkingWithoutOnIncomplete() {
@@ -1336,6 +1453,43 @@ func (s *ValidatorTestSuite) TestValidateNodes_Valid() {
 	index, _ := buildNodeIndex(nodes)
 	err := s.v.validateNodes(nodes, index, providers.FlowTypeAuthentication)
 	s.Nil(err)
+}
+
+// ---------------------------------------------------------------------------
+// Tests for validateModeFlowTypes
+// ---------------------------------------------------------------------------
+
+// Identity governance suspends and unsuspends only in an administration flow; a recovery flow takes
+// only its unlock, so a designer cannot save a recovery flow that faults at run time.
+func (s *ValidatorTestSuite) TestValidateModeFlowTypes_IdentityGovernance() {
+	cases := []struct {
+		mode     string
+		flowType providers.FlowType
+		allowed  bool
+	}{
+		{executor.ExecutorModeSuspend, providers.FlowTypeAdministration, true},
+		{executor.ExecutorModeUnsuspend, providers.FlowTypeAdministration, true},
+		{executor.ExecutorModeUnlock, providers.FlowTypeAdministration, true},
+		{executor.ExecutorModeUnlock, providers.FlowTypeRecovery, true},
+		{executor.ExecutorModeSuspend, providers.FlowTypeRecovery, false},
+		{executor.ExecutorModeUnsuspend, providers.FlowTypeRecovery, false},
+	}
+	for _, tc := range cases {
+		s.Run(tc.mode+"/"+string(tc.flowType), func() {
+			nodes := companionNodes(executor.ExecutorNameIdentityGovernance)
+			nodes[1].Executor.Mode = tc.mode
+
+			err := s.v.validateModeFlowTypes(tc.flowType, nodes)
+
+			if tc.allowed {
+				s.Nil(err)
+				return
+			}
+			s.Require().NotNil(err)
+			s.Equal(ErrorInvalidExecutorConfig.Code, err.Code)
+			s.Equal("error.flowmgtservice.unsupported_executor_mode_flow_type_description", err.ErrorDescription.Key)
+		})
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -2182,4 +2336,21 @@ func (s *ValidatorTestSuite) TestValidateExecutorSpecificConstraints_LinkingFail
 			s.Equal("linking_error", err.ErrorDescription.Params["failureNodeID"])
 		})
 	}
+}
+
+// A system flow is validated as one: only the SYSTEM type, and no node that waits for input, which the
+// flow API's validation does not accept as a type at all.
+func (s *ValidatorTestSuite) TestValidateSystemFlowDefinition() {
+	flow := minimalValidFlow()
+	flow.FlowType = providers.FlowTypeSystem
+	s.Equal(&ErrorInvalidFlowType, s.v.ValidateFlowDefinition(context.Background(), flow))
+
+	flow.FlowType = providers.FlowTypeAuthentication
+	s.Equal(&ErrorInvalidFlowType, s.v.ValidateSystemFlowDefinition(context.Background(), flow))
+
+	flow.FlowType = providers.FlowTypeSystem
+	flow.Nodes = append(flow.Nodes, providers.NodeDefinition{ID: "ask", Type: string(common.NodeTypePrompt)})
+	svcErr := s.v.ValidateSystemFlowDefinition(context.Background(), flow)
+	s.Require().NotNil(svcErr)
+	s.Equal("ask", svcErr.ErrorDescription.Params["nodeID"])
 }

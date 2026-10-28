@@ -20,6 +20,8 @@ import AuthenticationSection from '../components/AuthenticationSection';
 import AuthorizationMappingSection from '../components/AuthorizationMappingSection';
 import ConnectionDeleteDialog from '../components/ConnectionDeleteDialog';
 import ConnectionForm from '../components/ConnectionForm';
+import ConnectionUsagesSection from '../components/ConnectionUsagesSection';
+import OrganizationUnitSection from '../components/OrganizationUnitSection';
 import ReadOnlyCopyField from '../components/ReadOnlyCopyField';
 import ServiceAuthenticationMethods from '../components/ServiceAuthenticationMethods';
 import SubjectMappingSection from '../components/SubjectMappingSection';
@@ -573,6 +575,8 @@ export default function ConnectionDetailPage(): JSX.Element | null {
                 />
               </SettingsCard>
 
+              {data?.ouId && <OrganizationUnitSection ouId={data.ouId} />}
+
               <SettingsCard
                 title={
                   generalSettingsCardCopy === 'configuration'
@@ -644,6 +648,10 @@ export default function ConnectionDetailPage(): JSX.Element | null {
                     </Alert>
                   )}
                 </SettingsCard>
+              )}
+
+              {meta.showsUsages && resolvedId && (
+                <ConnectionUsagesSection connectionType={connectionType} connectionId={resolvedId} />
               )}
             </Stack>
           </TabPanel>

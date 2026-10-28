@@ -11,10 +11,12 @@ import {EXECUTOR_TO_IDP_TYPE_MAP, EXECUTORS_WITH_FIXED_INPUTS} from './execution
 import CriteriaRevocationProperties from './execution-properties/CriteriaRevocationProperties';
 import EmailProperties from './execution-properties/EmailProperties';
 import ExecutorInputsEditor from './execution-properties/ExecutorInputsEditor';
+import ExtensionProperties from './execution-properties/ExtensionProperties';
 import FederationProperties from './execution-properties/FederationProperties';
 import GroupExecutorProperties from './execution-properties/GroupExecutorProperties';
 import HttpRequestProperties from './execution-properties/HttpRequestProperties';
 import IdentifyingProperties from './execution-properties/IdentifyingProperties';
+import IdentityGovernanceProperties from './execution-properties/IdentityGovernanceProperties';
 import InviteProperties from './execution-properties/InviteProperties';
 import MagicLinkProperties from './execution-properties/MagicLinkProperties';
 import NoConfigProperties from './execution-properties/NoConfigProperties';
@@ -117,6 +119,9 @@ function ExecutionExtendedProperties({resource, onChange}: ExecutionExtendedProp
     case ExecutionTypes.GroupExecutor:
       executorSpecificProperties = <GroupExecutorProperties resource={resource} onChange={onChange} />;
       break;
+    case ExecutionTypes.IdentityGovernance:
+      executorSpecificProperties = <IdentityGovernanceProperties resource={resource} onChange={onChange} />;
+      break;
     case ExecutionTypes.ProvisioningExecutor:
       executorSpecificProperties = <ProvisioningProperties resource={resource} onChange={onChange} />;
       break;
@@ -131,6 +136,9 @@ function ExecutionExtendedProperties({resource, onChange}: ExecutionExtendedProp
       break;
     case ExecutionTypes.HTTPRequestExecutor:
       executorSpecificProperties = <HttpRequestProperties resource={resource} onChange={onChange} />;
+      break;
+    case ExecutionTypes.ExtensionExecutor:
+      executorSpecificProperties = <ExtensionProperties resource={resource} onChange={onChange} />;
       break;
     case ExecutionTypes.MagicLinkExecutor:
       executorSpecificProperties = <MagicLinkProperties resource={resource} onChange={onChange} />;
@@ -148,7 +156,7 @@ function ExecutionExtendedProperties({resource, onChange}: ExecutionExtendedProp
       executorSpecificProperties = <AttributeUniquenessValidatorProperties resource={resource} onChange={onChange} />;
       break;
     case ExecutionTypes.CredentialSetter:
-    case ExecutionTypes.IdentityGovernance:
+    case ExecutionTypes.PreSuspend:
     case ExecutionTypes.Session:
     case ExecutionTypes.OwnerResolver:
     case ExecutionTypes.AccountLinking:

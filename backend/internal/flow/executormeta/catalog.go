@@ -22,7 +22,7 @@ var catalog = map[string]providers.ExecutorMeta{
 	},
 	ExecutorNameApplicationActionValidator: {
 		SupportedModes:     []string{"revoke_all", "revoke_before_action"},
-		SupportedFlowTypes: []providers.FlowType{"ADMINISTRATION"},
+		SupportedFlowTypes: []providers.FlowType{"ADMINISTRATION", "SYSTEM"},
 	},
 	ExecutorNameApplicationDelete: {
 		SupportedFlowTypes: []providers.FlowType{"ADMINISTRATION"},
@@ -54,7 +54,7 @@ var catalog = map[string]providers.ExecutorMeta{
 	ExecutorNameCriteriaRevocation: {
 		DefaultMode:        ExecutorModeRevoke,
 		SupportedModes:     []string{ExecutorModeAdvanceCutoff, ExecutorModeRevoke},
-		SupportedFlowTypes: []providers.FlowType{"ADMINISTRATION"},
+		SupportedFlowTypes: []providers.FlowType{"ADMINISTRATION", "SYSTEM"},
 	},
 	ExecutorNameEmailExecutor: {
 		SupportedModes: []string{"send"},
@@ -62,6 +62,15 @@ var catalog = map[string]providers.ExecutorMeta{
 			{Property: "emailTemplate", IsRequired: true},
 			{Property: "senderId"},
 			{Property: "bestEffort"},
+		},
+	},
+	ExecutorNameExtension: {
+		SupportedProperties: []providers.ExecutorSupportedProperties{
+			{Property: "connectionId", IsRequired: true},
+			{Property: "inputKeys"},
+			{Property: "runtimeDataKeys"},
+			{Property: "responseKeys"},
+			{Property: "maxAttempts"},
 		},
 	},
 	ExecutorNameGitHubAuth: {
@@ -207,7 +216,7 @@ var catalog = map[string]providers.ExecutorMeta{
 		SupportedFlowTypes: []providers.FlowType{"AUTHENTICATION"},
 	},
 	ExecutorNameSessionRevocation: {
-		SupportedFlowTypes: []providers.FlowType{"ADMINISTRATION"},
+		SupportedFlowTypes: []providers.FlowType{"ADMINISTRATION", "SYSTEM"},
 	},
 	ExecutorNameSessionSignOut: {
 		SupportedFlowTypes: []providers.FlowType{"SIGNOUT"},

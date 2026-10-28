@@ -17,6 +17,8 @@ import { Page, Locator, expect } from "@playwright/test";
 import { ConsoleRoutes } from "../../configs/routes/console-routes";
 import { BasePage } from "../base.page";
 import { Timeouts } from "../../constants/timeouts";
+import { AccountStatusControls } from "../components/account-status-controls";
+import { OrganizationAccessSettings } from "../components/organization-access";
 
 export type UserFormData = {
   username: string;
@@ -86,9 +88,16 @@ export class UsersPage extends BasePage {
   readonly confirmResetPasswordButton: Locator;
   readonly cancelResetPasswordButton: Locator;
 
+  // Affiliations tab: the shared Organization Access screen
+  readonly organizationAccess: OrganizationAccessSettings;
+
+  // Lifecycle controls (User Details page header: Actions menu, its dialogs and the status banner)
+  readonly accountStatus: AccountStatusControls;
+
   constructor(page: Page, baseUrl: string) {
     super(page);
     this.baseUrl = baseUrl;
+    this.accountStatus = new AccountStatusControls(page);
 
     // Add User button
     this.addUserButton = page
@@ -193,6 +202,8 @@ export class UsersPage extends BasePage {
     this.confirmCredentialValueInput = this.credentialResetDialog.locator("#credential-confirm-password");
     this.confirmResetPasswordButton = this.credentialResetDialog.getByRole("button", { name: /^reset password$/i });
     this.cancelResetPasswordButton = this.credentialResetDialog.getByRole("button", { name: /^cancel$/i });
+
+    this.organizationAccess = new OrganizationAccessSettings(page);
   }
 
   /**
@@ -518,10 +529,15 @@ export class UsersPage extends BasePage {
     await this.resetChangesButton.click();
   }
 
-  /** Click the page-level "Save" button that persists unsaved attribute edits. */
+  /**
+   * Click the page-level "Save" button and wait for the save to finish. The wait is on the bar's
+   * "Reset" button: "Save" is relabelled "Saving…" while the request is in flight, so it stops
+   * matching the moment it is clicked, while "Reset" leaves only once the bar unmounts after the save.
+   */
   async clickSaveChanges() {
     await this.saveChangesButton.waitFor({ state: "visible", timeout: Timeouts.ELEMENT_VISIBILITY });
     await this.saveChangesButton.click();
+    await expect(this.resetChangesButton).toBeHidden({ timeout: Timeouts.FORM_LOAD });
   }
 
   /** Click "Reset Password" (or another credential field's reset button) on the Credentials tab. */

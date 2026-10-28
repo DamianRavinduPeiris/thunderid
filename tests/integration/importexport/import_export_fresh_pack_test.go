@@ -28,48 +28,7 @@ type exportRequest struct {
 	Themes            []string `json:"themes,omitempty"`
 	Layouts           []string `json:"layouts,omitempty"`
 	ServerConfigs     []string `json:"serverConfigs,omitempty"`
-}
-
-type importRequest struct {
-	Content   string                 `json:"content"`
-	DryRun    bool                   `json:"dryRun,omitempty"`
-	Options   importOptions          `json:"options"`
-	Vars      map[string]interface{} `json:"variables,omitempty"`
-	Deletions []resourceDeletion     `json:"deletions,omitempty"`
-}
-
-// resourceDeletion names a resource an import should remove.
-type resourceDeletion struct {
-	ResourceType string `json:"resourceType"`
-	ID           string `json:"id"`
-}
-
-type importOptions struct {
-	Upsert          bool   `json:"upsert"`
-	ContinueOnError bool   `json:"continueOnError"`
-	Target          string `json:"target"`
-}
-
-type importResponse struct {
-	Summary importSummary `json:"summary"`
-	Results []importItem  `json:"results"`
-}
-
-type importSummary struct {
-	TotalDocuments int `json:"totalDocuments"`
-	Imported       int `json:"imported"`
-	Deleted        int `json:"deleted,omitempty"`
-	Failed         int `json:"failed"`
-}
-
-type importItem struct {
-	ResourceType string `json:"resourceType"`
-	ResourceID   string `json:"resourceId,omitempty"`
-	ResourceName string `json:"resourceName,omitempty"`
-	Operation    string `json:"operation,omitempty"`
-	Status       string `json:"status"`
-	Code         string `json:"code,omitempty"`
-	Message      string `json:"message,omitempty"`
+	Connections       []string `json:"connections,omitempty"`
 }
 
 type createThemeRequest struct {
@@ -135,13 +94,13 @@ func (suite *ImportExportFreshPackSuite) TestServerConfigExportImportRoundTrip()
 	suite.putServerConfigCORS(`[]`)
 	suite.Require().NotContains(suite.getServerConfigCORS(), origin)
 
-	importResp, err := suite.importResources(importRequest{
+	importResp, err := suite.importResources(testutils.ImportRequest{
 		Content: exported,
-		Options: importOptions{Upsert: true, ContinueOnError: true, Target: "runtime"},
+		Options: testutils.ImportOptions{Upsert: true, ContinueOnError: true, Target: "runtime"},
 	})
 	suite.Require().NoError(err)
 
-	var serverConfigResult *importItem
+	var serverConfigResult *testutils.ImportItem
 	for i := range importResp.Results {
 		if importResp.Results[i].ResourceType == "server_config" {
 			serverConfigResult = &importResp.Results[i]
@@ -190,9 +149,9 @@ func (suite *ImportExportFreshPackSuite) TestAccountAccessExportImportRoundTrip(
 	suite.Require().NotEqual(1234, cleared.User.LastLoginResolutionSeconds)
 	suite.Require().Empty(cleared.User.Notifications.OnLock.Email.Templates.Temporary)
 
-	importResp, err := suite.importResources(importRequest{
+	importResp, err := suite.importResources(testutils.ImportRequest{
 		Content: exported,
-		Options: importOptions{Upsert: true, ContinueOnError: true, Target: "runtime"},
+		Options: testutils.ImportOptions{Upsert: true, ContinueOnError: true, Target: "runtime"},
 	})
 	suite.Require().NoError(err)
 	suite.Require().Len(importResp.Results, 1)
@@ -203,14 +162,14 @@ func (suite *ImportExportFreshPackSuite) TestAccountAccessExportImportRoundTrip(
 }
 
 func (suite *ImportExportFreshPackSuite) TestApplicationImportReportsIgnoredState() {
-	result, err := suite.importResources(importRequest{
+	result, err := suite.importResources(testutils.ImportRequest{
 		Content: fmt.Sprintf(`resource_type: application
 name: Ignored state import %d
 type: custom
 ouHandle: default
 state: SUSPENDED
 `, time.Now().UnixNano()),
-		Options: importOptions{Upsert: true, ContinueOnError: true, Target: "runtime"},
+		Options: testutils.ImportOptions{Upsert: true, ContinueOnError: true, Target: "runtime"},
 	})
 	suite.Require().NoError(err)
 	suite.Require().Len(result.Results, 1)
@@ -331,13 +290,13 @@ func (suite *ImportExportFreshPackSuite) TestDefaultResourceServerExportImportRo
 	suite.putServerConfigDefaultResourceServer("")
 	suite.Require().NotContains(suite.getServerConfigDefaultResourceServer(), resourceServerID)
 
-	importResp, err := suite.importResources(importRequest{
+	importResp, err := suite.importResources(testutils.ImportRequest{
 		Content: exported,
-		Options: importOptions{Upsert: true, ContinueOnError: true, Target: "runtime"},
+		Options: testutils.ImportOptions{Upsert: true, ContinueOnError: true, Target: "runtime"},
 	})
 	suite.Require().NoError(err)
 
-	var serverConfigResult *importItem
+	var serverConfigResult *testutils.ImportItem
 	for i := range importResp.Results {
 		if importResp.Results[i].ResourceType == "server_config" {
 			serverConfigResult = &importResp.Results[i]
@@ -464,10 +423,10 @@ func (suite *ImportExportFreshPackSuite) TestExportImportAcrossFreshPack() {
 	suite.assertNotFound("/design/themes/" + themeID)
 	suite.assertNotFound("/design/layouts/" + layoutID)
 
-	importResp, err := suite.importResources(importRequest{
+	importResp, err := suite.importResources(testutils.ImportRequest{
 		Content: yamlContent,
 		DryRun:  false,
-		Options: importOptions{
+		Options: testutils.ImportOptions{
 			Upsert:          false,
 			ContinueOnError: true,
 			Target:          "runtime",
@@ -538,9 +497,9 @@ ouId: %s
 vct: https://credentials.thunderid.local/ImportPresentation
 `, credentialID, suffix, ouID, presentationID, suffix, ouID)
 
-	response, err := suite.importResources(importRequest{
+	response, err := suite.importResources(testutils.ImportRequest{
 		Content: validContent,
-		Options: importOptions{Upsert: false, ContinueOnError: true, Target: "runtime"},
+		Options: testutils.ImportOptions{Upsert: false, ContinueOnError: true, Target: "runtime"},
 	})
 	suite.Require().NoError(err)
 	defer func() {
@@ -575,9 +534,9 @@ ouId: %s
 name: Updated imported presentation
 vct: https://credentials.thunderid.local/ImportPresentation
 `, credentialID, suffix, ouID, presentationID, suffix, ouID)
-	response, err = suite.importResources(importRequest{
+	response, err = suite.importResources(testutils.ImportRequest{
 		Content: updatedContent,
-		Options: importOptions{Upsert: true, ContinueOnError: true, Target: "runtime"},
+		Options: testutils.ImportOptions{Upsert: true, ContinueOnError: true, Target: "runtime"},
 	})
 	suite.Require().NoError(err)
 	suite.Equal(2, response.Summary.Imported)
@@ -600,9 +559,9 @@ ouHandle: import-vc-ou-%s
 vct: https://credentials.thunderid.local/ImportPresentation
 `, credentialID, suffix, suffix, presentationID, suffix, suffix)
 
-	response, err = suite.importResources(importRequest{
+	response, err = suite.importResources(testutils.ImportRequest{
 		Content: handleContent,
-		Options: importOptions{Upsert: true, ContinueOnError: true, Target: "runtime"},
+		Options: testutils.ImportOptions{Upsert: true, ContinueOnError: true, Target: "runtime"},
 	})
 	suite.Require().NoError(err)
 	suite.Equal(2, response.Summary.Imported)
@@ -629,9 +588,9 @@ ouHandle: missing-import-ou-%s
 vct: urn:import:invalid-ou
 `, suffix, suffix, suffix, suffix, suffix, suffix)
 
-	response, err := suite.importResources(importRequest{
+	response, err := suite.importResources(testutils.ImportRequest{
 		Content: content,
-		Options: importOptions{ContinueOnError: true, Target: "runtime"},
+		Options: testutils.ImportOptions{ContinueOnError: true, Target: "runtime"},
 	})
 	suite.Require().NoError(err)
 	suite.Equal(0, response.Summary.Imported)
@@ -644,6 +603,11 @@ vct: urn:import:invalid-ou
 }
 
 func (suite *ImportExportFreshPackSuite) exportResources(reqBody exportRequest) (string, error) {
+	return postExport(reqBody)
+}
+
+// postExport sends an export request to the server and returns the exported YAML.
+func postExport(reqBody exportRequest) (string, error) {
 	payload, err := json.Marshal(reqBody)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal export request: %w", err)
@@ -701,7 +665,13 @@ func (suite *ImportExportFreshPackSuite) exportResources(reqBody exportRequest) 
 	return "", fmt.Errorf("export response does not contain resources or files")
 }
 
-func (suite *ImportExportFreshPackSuite) importResources(reqBody importRequest) (*importResponse, error) {
+func (suite *ImportExportFreshPackSuite) importResources(
+	reqBody testutils.ImportRequest) (*testutils.ImportResponse, error) {
+	return postImport(reqBody)
+}
+
+// postImport sends an import request to the server and returns the parsed report.
+func postImport(reqBody testutils.ImportRequest) (*testutils.ImportResponse, error) {
 	payload, err := json.Marshal(reqBody)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal import request: %w", err)
@@ -732,7 +702,7 @@ func (suite *ImportExportFreshPackSuite) importResources(reqBody importRequest) 
 		return nil, fmt.Errorf("import request failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
-	var parsed importResponse
+	var parsed testutils.ImportResponse
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return nil, fmt.Errorf("failed to parse import response: %w", err)
 	}
@@ -913,9 +883,9 @@ requestedClaims:
   - email
 `, credentialID, suffix, firstOU, suffix, presentationID, suffix, firstOU, suffix)
 
-	response, err := suite.importResources(importRequest{
+	response, err := suite.importResources(testutils.ImportRequest{
 		Content: content,
-		Options: importOptions{ContinueOnError: true, Target: "runtime"},
+		Options: testutils.ImportOptions{ContinueOnError: true, Target: "runtime"},
 	})
 	suite.Require().NoError(err)
 	suite.Equal(2, response.Summary.Imported)
@@ -1104,9 +1074,9 @@ members:
     type: user
 `, groupName, s.ouID, s.userID)
 
-	resp, err := s.importResources(importRequest{
+	resp, err := s.importResources(testutils.ImportRequest{
 		Content: yamlContent,
-		Options: importOptions{
+		Options: testutils.ImportOptions{
 			Upsert:          false,
 			ContinueOnError: false,
 			Target:          "runtime",
@@ -1144,9 +1114,9 @@ description: Imported group without members
 ouId: %s
 `, groupName, s.ouID)
 
-	resp, err := s.importResources(importRequest{
+	resp, err := s.importResources(testutils.ImportRequest{
 		Content: yamlContent,
-		Options: importOptions{
+		Options: testutils.ImportOptions{
 			Upsert:          false,
 			ContinueOnError: false,
 			Target:          "runtime",
@@ -1189,9 +1159,9 @@ members:
     type: user
 `, groupID, s.handleSuffix, s.ouID, s.userID)
 
-	resp, err := s.importResources(importRequest{
+	resp, err := s.importResources(testutils.ImportRequest{
 		Content: yamlContent,
-		Options: importOptions{
+		Options: testutils.ImportOptions{
 			Upsert:          true,
 			ContinueOnError: false,
 			Target:          "runtime",
@@ -1237,9 +1207,9 @@ assignments:
     type: group
 `, roleName, s.ouID, groupID)
 
-	resp, err := s.importResources(importRequest{
+	resp, err := s.importResources(testutils.ImportRequest{
 		Content: yamlContent,
-		Options: importOptions{
+		Options: testutils.ImportOptions{
 			Upsert:          false,
 			ContinueOnError: false,
 			Target:          "runtime",
@@ -1299,9 +1269,9 @@ assignments:
     type: group
 `, roleID, s.handleSuffix, s.ouID, groupID)
 
-	resp, err := s.importResources(importRequest{
+	resp, err := s.importResources(testutils.ImportRequest{
 		Content: yamlContent,
-		Options: importOptions{
+		Options: testutils.ImportOptions{
 			Upsert:          true,
 			ContinueOnError: false,
 			Target:          "runtime",
@@ -1342,9 +1312,9 @@ ouId: %s
 permissions: []
 `, roleName, s.ouID)
 
-	resp, err := s.importResources(importRequest{
+	resp, err := s.importResources(testutils.ImportRequest{
 		Content: yamlContent,
-		Options: importOptions{
+		Options: testutils.ImportOptions{
 			Upsert:          false,
 			ContinueOnError: false,
 			Target:          "runtime",
@@ -1395,9 +1365,9 @@ resources:
 `, s.handleSuffix, identifier, s.ouID,
 		s.handleSuffix, s.handleSuffix, s.handleSuffix)
 
-	resp, err := s.importResources(importRequest{
+	resp, err := s.importResources(testutils.ImportRequest{
 		Content: yamlContent,
-		Options: importOptions{
+		Options: testutils.ImportOptions{
 			Upsert:          false,
 			ContinueOnError: false,
 			Target:          "runtime",
@@ -1470,9 +1440,9 @@ resources:
 	}
 
 	// First import — creates the resource server and resources (no id in YAML).
-	resp, err := s.importResources(importRequest{
+	resp, err := s.importResources(testutils.ImportRequest{
 		Content: buildYAML(""),
-		Options: importOptions{
+		Options: testutils.ImportOptions{
 			Upsert:          false,
 			ContinueOnError: false,
 			Target:          "runtime",
@@ -1485,9 +1455,9 @@ resources:
 	defer testutils.DeleteResourceServer(rsID)
 
 	// Second import (upsert) — include the ID so the upsert path triggers an update.
-	resp2, err := s.importResources(importRequest{
+	resp2, err := s.importResources(testutils.ImportRequest{
 		Content: buildYAML(rsID),
-		Options: importOptions{
+		Options: testutils.ImportOptions{
 			Upsert:          true,
 			ContinueOnError: false,
 			Target:          "runtime",
@@ -1513,7 +1483,7 @@ resources:
 	s.Equal("Upsert Child", children[0].Name)
 }
 
-func (s *GroupRoleResourceImportExportSuite) importResources(reqBody importRequest) (*importResponse, error) {
+func (s *GroupRoleResourceImportExportSuite) importResources(reqBody testutils.ImportRequest) (*testutils.ImportResponse, error) {
 	payload, err := json.Marshal(reqBody)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal import request: %w", err)
@@ -1540,7 +1510,7 @@ func (s *GroupRoleResourceImportExportSuite) importResources(reqBody importReque
 		return nil, fmt.Errorf("import request failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
-	var parsed importResponse
+	var parsed testutils.ImportResponse
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return nil, fmt.Errorf("failed to parse import response: %w", err)
 	}

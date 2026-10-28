@@ -8,6 +8,8 @@ import (
 
 	"github.com/thunder-id/thunderid/internal/agent"
 	"github.com/thunder-id/thunderid/internal/application"
+	authzdetailmgt "github.com/thunder-id/thunderid/internal/authzdetail/mgt"
+	"github.com/thunder-id/thunderid/internal/connection"
 	"github.com/thunder-id/thunderid/internal/connection/authzenpdp"
 	layoutmgt "github.com/thunder-id/thunderid/internal/design/layout/mgt"
 	thememgt "github.com/thunder-id/thunderid/internal/design/theme/mgt"
@@ -56,6 +58,8 @@ func Initialize(
 	notifTemplateService notificationtemplate.NotificationTemplateServiceInterface,
 	authZENPDPService authzenpdp.AuthZENPDPServiceInterface,
 	sharingService sharing.SharingServiceInterface,
+	authorizationDetailService authzdetailmgt.AuthorizationDetailMgtServiceInterface,
+	httpConnectionService connection.HTTPConnectionWriterInterface,
 	references *secretresolver.Resolver,
 ) ImportServiceInterface {
 	service := newImportService(
@@ -84,6 +88,8 @@ func Initialize(
 	// Set here rather than passed to newImportService, which every test constructs without one.
 	service.(*importService).references = references
 	service.(*importService).sharingService = sharingService
+	service.(*importService).authorizationDetailTypeService = authorizationDetailService
+	service.(*importService).httpConnectionService = httpConnectionService
 	importHandler := newImportHandler(service)
 
 	registerRoutes(mux, importHandler)

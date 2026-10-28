@@ -599,6 +599,32 @@
     "category": "EXECUTOR",
     "type": "TASK_EXECUTION",
     "display": {
+      "header": "Extension Executor",
+      "label": "Extension",
+      "description": "Call your own service through a service endpoint connection",
+      "image": "assets/images/icons/link.svg",
+      "showOnResourcePanel": true
+    },
+    "data": {
+      "action": {
+        "type": "EXECUTOR",
+        "executor": {
+          "name": "ExtensionExecutor"
+        },
+        "onSuccess": "",
+        "onFailure": "",
+        "onIncomplete": ""
+      },
+      "properties": {
+        "connectionId": ""
+      }
+    }
+  },
+  {
+    "resourceType": "STEP",
+    "category": "EXECUTOR",
+    "type": "TASK_EXECUTION",
+    "display": {
       "header": "User Type Resolver",
       "label": "User Type Resolver",
       "description": "Determine the type of the signing-in user",
@@ -1465,6 +1491,66 @@
       "action": {
         "type": "EXECUTOR",
         "executor": {"name": "ActionDeletionExecutor"},
+        "onSuccess": "",
+        "onFailure": ""
+      }
+    }
+  },
+  {
+    "resourceType": "STEP",
+    "category": "EXECUTOR",
+    "type": "TASK_EXECUTION",
+    "display": {
+      "header": "Pre Suspend Executor",
+      "label": "Validate and Plan Suspension",
+      "description": "Check the operator may suspend the target, then plan revocation of what it holds. Place it before the revocation nodes and Suspend Identity",
+      "image": "assets/images/icons/magnifying-glass.svg",
+      "showOnResourcePanel": true
+    },
+    "data": {
+      "action": {
+        "type": "EXECUTOR",
+        "executor": {"name": "PreSuspendExecutor"},
+        "onSuccess": "",
+        "onFailure": ""
+      }
+    }
+  },
+  {
+    "resourceType": "STEP",
+    "category": "EXECUTOR",
+    "type": "TASK_EXECUTION",
+    "display": {
+      "header": "Identity Governance Executor",
+      "label": "Suspend Identity",
+      "description": "Place a security hold on the identity a Pre Suspend Executor planned, so it cannot authenticate. Switch the operation to Unsuspend to release one",
+      "image": "ShieldBan",
+      "showOnResourcePanel": true
+    },
+    "data": {
+      "action": {
+        "type": "EXECUTOR",
+        "executor": {"name": "IdentityGovernanceExecutor", "mode": "suspend"},
+        "onSuccess": "",
+        "onFailure": ""
+      }
+    }
+  },
+  {
+    "resourceType": "STEP",
+    "category": "EXECUTOR",
+    "type": "TASK_EXECUTION",
+    "display": {
+      "header": "Identity Governance Executor",
+      "label": "Unsuspend Identity",
+      "description": "Release a security hold. For a user it leaves the account locked until it recovers its credentials or is unlocked",
+      "image": "ShieldCheck",
+      "showOnResourcePanel": false
+    },
+    "data": {
+      "action": {
+        "type": "EXECUTOR",
+        "executor": {"name": "IdentityGovernanceExecutor", "mode": "unsuspend"},
         "onSuccess": "",
         "onFailure": ""
       }

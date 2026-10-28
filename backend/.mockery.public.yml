@@ -317,6 +317,15 @@ packages:
       pkgname: idpmock
       filename: "{{.InterfaceName}}_mock.go"
 
+  github.com/thunder-id/thunderid/internal/connection/authzenpdp:
+    interfaces:
+      AuthZENPDPServiceInterface:
+        config:
+          dir: tests/mocks/connection/authzenpdpmock
+          structname: '{{.InterfaceName}}Mock'
+          pkgname: authzenpdpmock
+          filename: "{{.InterfaceName}}_mock.go"
+
   github.com/thunder-id/thunderid/internal/connection/httpconnection:
     interfaces:
       HTTPConnectionServiceInterface:
@@ -570,6 +579,15 @@ packages:
       structname: '{{.InterfaceName}}Mock'
       pkgname: resourcemock
       filename: "{{.InterfaceName}}_mock.go"
+
+  github.com/thunder-id/thunderid/internal/authzdetail/mgt:
+    interfaces:
+      AuthorizationDetailMgtServiceInterface:
+        config:
+          dir: tests/mocks/authzdetailmgtmock
+          structname: '{{.InterfaceName}}Mock'
+          pkgname: authzdetailmgtmock
+          filename: "{{.InterfaceName}}_mock.go"
 
   github.com/thunder-id/thunderid/internal/serverconfig:
     interfaces:

@@ -9,9 +9,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	authzdetailmgt "github.com/thunder-id/thunderid/internal/authzdetail/mgt"
 
 	"github.com/thunder-id/thunderid/pkg/thunderidengine/providers"
 
@@ -22,11 +25,14 @@ import (
 	"github.com/thunder-id/thunderid/internal/application"
 	"github.com/thunder-id/thunderid/internal/application/model"
 	"github.com/thunder-id/thunderid/internal/connection/authzenpdp"
+	"github.com/thunder-id/thunderid/internal/connection/connectionou"
+	"github.com/thunder-id/thunderid/internal/connection/httpconnection"
 	layoutmgt "github.com/thunder-id/thunderid/internal/design/layout/mgt"
 	thememgt "github.com/thunder-id/thunderid/internal/design/theme/mgt"
 	"github.com/thunder-id/thunderid/internal/entitytype"
 	flowmgt "github.com/thunder-id/thunderid/internal/flow/mgt"
 	"github.com/thunder-id/thunderid/internal/group"
+	"github.com/thunder-id/thunderid/internal/idp"
 	"github.com/thunder-id/thunderid/internal/notification"
 	ncommon "github.com/thunder-id/thunderid/internal/notification/common"
 	"github.com/thunder-id/thunderid/internal/notificationtemplate"
@@ -36,7 +42,9 @@ import (
 	"github.com/thunder-id/thunderid/internal/sharing"
 	"github.com/thunder-id/thunderid/internal/system/cmodels"
 	"github.com/thunder-id/thunderid/internal/system/config"
+	declarativeresource "github.com/thunder-id/thunderid/internal/system/declarative_resource"
 	"github.com/thunder-id/thunderid/internal/system/kmprovider/defaultkm"
+	"github.com/thunder-id/thunderid/internal/system/outboundauth"
 	"github.com/thunder-id/thunderid/internal/user"
 	engineconfig "github.com/thunder-id/thunderid/pkg/thunderidengine/config"
 
@@ -195,8 +203,18 @@ type fakeIDPService struct {
 	getErr    *tidcommon.ServiceError
 }
 
+func (f *fakeIDPService) ResolveIdentityProviderOU(context.Context, *providers.IDPDTO) *tidcommon.ServiceError {
+	return nil
+}
+
 type fakeAuthZENPDPService struct {
 	created *authzenpdp.AuthZENPDPConnection
+}
+
+func (f *fakeAuthZENPDPService) ResolveConnectionOU(
+	context.Context, *authzenpdp.AuthZENPDPConnection,
+) *tidcommon.ServiceError {
+	return nil
 }
 
 func (f *fakeAuthZENPDPService) CreateAuthZENPDPConnection(
@@ -293,6 +311,10 @@ type fakeSenderService struct {
 	updateErr *tidcommon.ServiceError
 	createErr *tidcommon.ServiceError
 	getErr    *tidcommon.ServiceError
+}
+
+func (f *fakeSenderService) ResolveSenderOU(context.Context, *ncommon.NotificationSenderDTO) *tidcommon.ServiceError {
+	return nil
 }
 
 func (f *fakeSenderService) CreateSender(
@@ -4325,4 +4347,695 @@ func TestImportUserRefusesPoliciesWithoutASharingAdapter(t *testing.T) {
 	assert.Equal(t, statusFailed, resp.Results[0].Status)
 	assert.Contains(t, resp.Results[0].Message, "sharing")
 	assert.Equal(t, []string{"user-5"}, userSvc.deleted)
+}
+
+type fakeAuthorizationDetailTypeService struct {
+	existing    map[string]*providers.AuthorizationDetailType
+	created     []providers.AuthorizationDetailType
+	updated     []providers.AuthorizationDetailType
+	updateErr   *tidcommon.ServiceError
+	validateErr *tidcommon.ServiceError
+	validated   []providers.AuthorizationDetailType
+}
+
+func (f *fakeAuthorizationDetailTypeService) DeleteAuthorizationDetailType(
+	_ context.Context, id string,
+) *tidcommon.ServiceError {
+	delete(f.existing, id)
+	return nil
+}
+
+func (f *fakeAuthorizationDetailTypeService) GetAuthorizationDetailTypeByValue(
+	_ context.Context, value string,
+) (*providers.AuthorizationDetailType, *tidcommon.ServiceError) {
+	for _, t := range f.existing {
+		if t.Type == value {
+			return t, nil
+		}
+	}
+	return nil, nil
+}
+
+func (f *fakeAuthorizationDetailTypeService) ValidateAuthorizationDetailType(
+	_ context.Context, t providers.AuthorizationDetailType,
+) *tidcommon.ServiceError {
+	f.validated = append(f.validated, t)
+	return f.validateErr
+}
+
+func (f *fakeAuthorizationDetailTypeService) CreateAuthorizationDetailType(
+	_ context.Context, t providers.AuthorizationDetailType,
+) (*providers.AuthorizationDetailType, *tidcommon.ServiceError) {
+	f.created = append(f.created, t)
+	return &t, nil
+}
+
+func (f *fakeAuthorizationDetailTypeService) GetAuthorizationDetailType(
+	_ context.Context, id string,
+) (*providers.AuthorizationDetailType, *tidcommon.ServiceError) {
+	if t, ok := f.existing[id]; ok {
+		return t, nil
+	}
+	return nil, &authzdetailmgt.ErrorTypeNotFound
+}
+
+func (f *fakeAuthorizationDetailTypeService) UpdateAuthorizationDetailType(
+	ctx context.Context, id string, t providers.AuthorizationDetailType,
+) (*providers.AuthorizationDetailType, *tidcommon.ServiceError) {
+	if _, svcErr := f.GetAuthorizationDetailType(ctx, id); svcErr != nil {
+		return nil, svcErr
+	}
+	if f.updateErr != nil {
+		return nil, f.updateErr
+	}
+	f.updated = append(f.updated, t)
+	return &t, nil
+}
+
+// withAuthorizationDetailTypeStore initializes the server runtime with the given type store mode.
+func withAuthorizationDetailTypeStore(t *testing.T, store string) {
+	config.ResetServerRuntime()
+	t.Cleanup(config.ResetServerRuntime)
+	require.NoError(t, config.InitializeServerRuntime("/tmp/test", &config.Config{
+		AuthorizationDetailType: config.AuthorizationDetailTypeConfig{Store: store},
+	}))
+}
+
+func newAuthorizationDetailTypeImportService(adtSvc authorizationDetailTypeAdapter) ImportServiceInterface {
+	svc := newImportService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+		nil, nil, nil)
+	svc.(*importService).authorizationDetailTypeService = adtSvc
+	return svc
+}
+
+const authorizationDetailTypeDocument = `resource_type: authorization_detail_type
+id: adt-1
+type: payment_initiation
+name: Payment initiation
+version: 2
+schema: '{"type":"object","properties":{"amount":{"type":"string"}}}'
+consentTemplate: Pay {{amount}}
+processor:
+  endpoint: https://bank.example.com/rar
+reuse: false
+`
+
+func TestImportAuthorizationDetailType_CreatesWhenAbsent(t *testing.T) {
+	adtSvc := &fakeAuthorizationDetailTypeService{}
+	svc := newAuthorizationDetailTypeImportService(adtSvc)
+
+	resp, err := svc.ImportResources(context.Background(), &ImportRequest{Content: authorizationDetailTypeDocument})
+
+	require.Nil(t, err)
+	require.Len(t, resp.Results, 1)
+	assert.Equal(t, statusSuccess, resp.Results[0].Status)
+	assert.Equal(t, operationCreate, resp.Results[0].Operation)
+	require.Len(t, adtSvc.created, 1)
+	created := adtSvc.created[0]
+	assert.Equal(t, "adt-1", created.ID, "the type keeps the id it was exported with")
+	assert.Equal(t, "Pay {{amount}}", created.ConsentTemplate, "consent placeholders survive template resolution")
+	assert.Equal(t, "https://bank.example.com/rar", created.Processor.Endpoint)
+	assert.False(t, created.Reuse)
+	assert.JSONEq(t, `{"type":"object","properties":{"amount":{"type":"string"}}}`, string(created.Schema))
+}
+
+func TestImportAuthorizationDetailType_UpdatesWhenPresent(t *testing.T) {
+	adtSvc := &fakeAuthorizationDetailTypeService{existing: map[string]*providers.AuthorizationDetailType{
+		"adt-1": {ID: "adt-1", Type: "payment_initiation"},
+	}}
+	svc := newAuthorizationDetailTypeImportService(adtSvc)
+
+	resp, err := svc.ImportResources(context.Background(), &ImportRequest{Content: authorizationDetailTypeDocument})
+
+	require.Nil(t, err)
+	assert.Equal(t, statusSuccess, resp.Results[0].Status)
+	assert.Equal(t, operationUpdate, resp.Results[0].Operation)
+	require.Len(t, adtSvc.updated, 1)
+	assert.Empty(t, adtSvc.created)
+
+	resp, err = svc.ImportResources(context.Background(), &ImportRequest{
+		Content: authorizationDetailTypeDocument, DryRun: true,
+	})
+	require.Nil(t, err)
+	assert.Equal(t, operationUpdate, resp.Results[0].Operation)
+	assert.Len(t, adtSvc.updated, 1, "a dry run changes nothing")
+}
+
+func TestImportAuthorizationDetailType_ReportsDeclarativeType(t *testing.T) {
+	adtSvc := &fakeAuthorizationDetailTypeService{
+		existing: map[string]*providers.AuthorizationDetailType{
+			"adt-1": {ID: "adt-1", IsReadOnly: true},
+		},
+		updateErr: &authzdetailmgt.ErrorImmutableType,
+	}
+	svc := newAuthorizationDetailTypeImportService(adtSvc)
+
+	resp, err := svc.ImportResources(context.Background(), &ImportRequest{Content: authorizationDetailTypeDocument})
+
+	require.Nil(t, err)
+	assert.Equal(t, statusFailed, resp.Results[0].Status)
+	assert.Equal(t, authzdetailmgt.ErrorImmutableType.Code, resp.Results[0].Code)
+	assert.Empty(t, adtSvc.created)
+}
+
+func TestImportAuthorizationDetailType_DryRunCreateAndFailures(t *testing.T) {
+	withAuthorizationDetailTypeStore(t, "")
+	adtSvc := &fakeAuthorizationDetailTypeService{}
+	svc := newAuthorizationDetailTypeImportService(adtSvc)
+
+	resp, err := svc.ImportResources(context.Background(), &ImportRequest{
+		Content: authorizationDetailTypeDocument, DryRun: true,
+	})
+	require.Nil(t, err)
+	assert.Equal(t, operationCreate, resp.Results[0].Operation)
+	assert.Empty(t, adtSvc.created)
+
+	resp, err = svc.ImportResources(context.Background(), &ImportRequest{
+		Content: "resource_type: authorization_detail_type\nid: adt-1\nname: Bad\nschema: 'not json'\n",
+	})
+	require.Nil(t, err)
+	assert.Equal(t, statusFailed, resp.Results[0].Status)
+	assert.Equal(t, ErrorInvalidYAMLContent.Code, resp.Results[0].Code)
+
+	resp, err = newAuthorizationDetailTypeImportService(nil).ImportResources(context.Background(),
+		&ImportRequest{Content: authorizationDetailTypeDocument})
+	require.Nil(t, err)
+	assert.Equal(t, statusFailed, resp.Results[0].Status)
+}
+
+func TestImportAuthorizationDetailType_DeletesAType(t *testing.T) {
+	adtSvc := existingTypes(&providers.AuthorizationDetailType{ID: "adt-1", Type: "payment_initiation"},
+		&providers.AuthorizationDetailType{ID: "adt-2", Type: "other"})
+	svc := newAuthorizationDetailTypeImportService(adtSvc)
+
+	resp, err := svc.ImportResources(context.Background(), &ImportRequest{
+		Deletions: []ResourceDeletion{{ResourceType: resourceTypeAuthorizationDetailType, ID: "adt-1"}},
+	})
+
+	require.Nil(t, err)
+	require.Len(t, resp.Results, 1)
+	assert.Equal(t, statusSuccess, resp.Results[0].Status)
+	assert.Equal(t, 1, resp.Summary.Deleted)
+	assert.NotContains(t, adtSvc.existing, "adt-1")
+	assert.Contains(t, adtSvc.existing, "adt-2", "unrelated types must be left alone")
+}
+
+// existingTypes returns an authorization details type service holding the given types.
+func existingTypes(types ...*providers.AuthorizationDetailType) *fakeAuthorizationDetailTypeService {
+	existing := make(map[string]*providers.AuthorizationDetailType, len(types))
+	for _, t := range types {
+		existing[t.ID] = t
+	}
+	return &fakeAuthorizationDetailTypeService{existing: existing}
+}
+
+// A dry run refuses what the real import would, reporting the operation that import would perform.
+func TestImportAuthorizationDetailType_DryRunPredictsRefusals(t *testing.T) {
+	invalidUpdate := existingTypes(&providers.AuthorizationDetailType{ID: "adt-1", Type: "payment_initiation"})
+	invalidUpdate.validateErr = &authzdetailmgt.ErrorInvalidSchema
+	cases := map[string]struct {
+		service   *fakeAuthorizationDetailTypeService
+		options   *ImportOptions
+		store     string
+		code      string
+		operation string
+	}{
+		"invalid type": {&fakeAuthorizationDetailTypeService{validateErr: &authzdetailmgt.ErrorInvalidSchema}, nil,
+			"", authzdetailmgt.ErrorInvalidSchema.Code, operationCreate},
+		"invalid update": {invalidUpdate, nil, "", authzdetailmgt.ErrorInvalidSchema.Code, operationUpdate},
+		"type value taken": {existingTypes(&providers.AuthorizationDetailType{ID: "adt-other",
+			Type: "payment_initiation"}), nil, "", authzdetailmgt.ErrorTypeConflict.Code, operationCreate},
+		"id taken without upsert": {existingTypes(&providers.AuthorizationDetailType{ID: "adt-1", Type: "other"}),
+			&ImportOptions{Upsert: boolPtr(false)}, "", authzdetailmgt.ErrorTypeIDConflict.Code, operationCreate},
+		"declarative type": {existingTypes(&providers.AuthorizationDetailType{ID: "adt-1",
+			Type: "payment_initiation", IsReadOnly: true}), nil, "", authzdetailmgt.ErrorImmutableType.Code,
+			operationUpdate},
+		"type value changed": {existingTypes(&providers.AuthorizationDetailType{ID: "adt-1", Type: "other"}), nil,
+			"", authzdetailmgt.ErrorTypeValueImmutable.Code, operationUpdate},
+		"create in declarative-only mode": {&fakeAuthorizationDetailTypeService{}, nil, "declarative",
+			authzdetailmgt.ErrorDeclarativeModeCreateNotAllowed.Code, operationCreate},
+	}
+	for name, tc := range cases {
+		withAuthorizationDetailTypeStore(t, tc.store)
+		resp, err := newAuthorizationDetailTypeImportService(tc.service).ImportResources(context.Background(),
+			&ImportRequest{Content: authorizationDetailTypeDocument, DryRun: true, Options: tc.options})
+		require.Nil(t, err, name)
+		assert.Equal(t, statusFailed, resp.Results[0].Status, name)
+		assert.Equal(t, tc.code, resp.Results[0].Code, name)
+		assert.Equal(t, tc.operation, resp.Results[0].Operation, name)
+		assert.Empty(t, tc.service.created, name)
+		assert.Empty(t, tc.service.updated, name)
+	}
+}
+
+// A dry run create checks the credential as sent, not against a stored type that holds the id, as the
+// real create does.
+func TestImportAuthorizationDetailType_DryRunCreateIgnoresTheStoredType(t *testing.T) {
+	withAuthorizationDetailTypeStore(t, "")
+	adtSvc := existingTypes(&providers.AuthorizationDetailType{ID: "adt-1", Type: "other"})
+
+	resp, err := newAuthorizationDetailTypeImportService(adtSvc).ImportResources(context.Background(),
+		&ImportRequest{Content: authorizationDetailTypeDocument, DryRun: true,
+			Options: &ImportOptions{Upsert: boolPtr(false)}})
+
+	require.Nil(t, err)
+	assert.Equal(t, authzdetailmgt.ErrorTypeIDConflict.Code, resp.Results[0].Code)
+	require.Len(t, adtSvc.validated, 1)
+	assert.Empty(t, adtSvc.validated[0].ID)
+}
+
+// An id wider than the store's ID column is refused before anything is written.
+func TestImportAuthorizationDetailType_RefusesAnOverlongID(t *testing.T) {
+	adtSvc := &fakeAuthorizationDetailTypeService{}
+	content := strings.Replace(authorizationDetailTypeDocument, "id: adt-1", "id: "+strings.Repeat("a", 256), 1)
+
+	for _, dryRun := range []bool{false, true} {
+		resp, err := newAuthorizationDetailTypeImportService(adtSvc).ImportResources(context.Background(),
+			&ImportRequest{Content: content, DryRun: dryRun})
+		require.Nil(t, err)
+		assert.Equal(t, statusFailed, resp.Results[0].Status)
+		assert.Equal(t, ErrorInvalidYAMLContent.Code, resp.Results[0].Code)
+	}
+	assert.Empty(t, adtSvc.created)
+}
+
+func TestDeleteResource_RemovesAuthorizationDetailTypeFile(t *testing.T) {
+	tempHome := t.TempDir()
+	config.ResetServerRuntime()
+	t.Cleanup(config.ResetServerRuntime)
+	require.NoError(t, config.InitializeServerRuntime(tempHome, &config.Config{}))
+
+	resourceDir := filepath.Join(tempHome, "config", "resources", "authorization_detail_types")
+	require.NoError(t, os.MkdirAll(resourceDir, 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(resourceDir, "payment.yaml"),
+		[]byte(authorizationDetailTypeDocument), 0o600))
+
+	resp, svcErr := newAuthorizationDetailTypeImportService(nil).DeleteResource(context.Background(),
+		&DeleteResourceRequest{ResourceType: resourceTypeAuthorizationDetailType, ResourceKey: "adt-1"})
+
+	require.Nil(t, svcErr)
+	assert.Equal(t, "payment.yaml", resp.DeletedFile)
+	_, statErr := os.Stat(filepath.Join(resourceDir, "payment.yaml"))
+	assert.True(t, os.IsNotExist(statErr))
+}
+
+// connectionKind describes how the importer drives the service of one kind of connection, so a scenario runs against
+// each kind.
+type connectionKind struct {
+	name string
+	// doc is a connection document of the kind with the given id, naming its owner by the given lines.
+	doc func(id, owner string) string
+	// service returns the mock of the service of the kind, and the methods the importer calls on it.
+	service                                func() *mock.Mock
+	resolveMethod, createMethod, getMethod string
+	// created is what the service answers a create call with, and stored what it answers a get call with for a
+	// connection owned by the given organization unit.
+	created any
+	stored  func(ouID string) any
+	// updateNotAllowedCode is the code of the error the service answers an update to another owner with.
+	updateNotAllowedCode string
+}
+
+// ownerCall is a call to the service to resolve the owner of a connection document.
+type ownerCall struct {
+	// wantOUID and wantHandle are the owner the document names, which the importer hands to the service.
+	wantOUID, wantHandle string
+	// setOUID is the organization unit the service resolves the owner to, when it is not empty.
+	setOUID string
+	// svcErr is the error the service answers with.
+	svcErr *tidcommon.ServiceError
+}
+
+type ImportConnectionOUTestSuite struct {
+	suite.Suite
+	idpService    *idpAdapterMock
+	senderService *senderAdapterMock
+	pdpService    *authZENPDPAdapterMock
+	svc           ImportServiceInterface
+}
+
+func TestImportConnectionOUTestSuite(t *testing.T) {
+	suite.Run(t, new(ImportConnectionOUTestSuite))
+}
+
+func (s *ImportConnectionOUTestSuite) SetupTest() {
+	s.idpService = newIdpAdapterMock(s.T())
+	s.senderService = newSenderAdapterMock(s.T())
+	s.pdpService = newAuthZENPDPAdapterMock(s.T())
+	s.svc = newImportService(
+		nil, s.idpService, s.senderService, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+		nil, nil, s.pdpService)
+}
+
+// ownerFields returns the pointers to the ouId and the ouHandle of the connection a resolve call is made with, which
+// every kind of connection holds in fields of those names.
+func ownerFields(arg any) (ouID, ouHandle *string) {
+	connection := reflect.ValueOf(arg).Elem()
+	return connection.FieldByName("OUID").Addr().Interface().(*string),
+		connection.FieldByName("OUHandle").Addr().Interface().(*string)
+}
+
+// createdOU returns the organization unit the argument of a create call names, which is a connection or a request
+// that holds it in a field named OUID.
+func createdOU(arg any) string {
+	return reflect.Indirect(reflect.ValueOf(arg)).FieldByName("OUID").String()
+}
+
+// expectResolve expects the service of the kind to be asked to resolve the owner of the document.
+func (s *ImportConnectionOUTestSuite) expectResolve(kind connectionKind, call ownerCall) {
+	kind.service().On(kind.resolveMethod, mock.Anything, mock.MatchedBy(func(arg any) bool {
+		ouID, ouHandle := ownerFields(arg)
+		return *ouID == call.wantOUID && *ouHandle == call.wantHandle
+	})).Run(func(args mock.Arguments) {
+		if call.setOUID != "" {
+			ouID, _ := ownerFields(args.Get(1))
+			*ouID = call.setOUID
+		}
+	}).Return(call.svcErr).Once()
+}
+
+// expectCreate expects the connection to be created under the given organization unit.
+func (s *ImportConnectionOUTestSuite) expectCreate(kind connectionKind, ouID string) {
+	kind.service().On(kind.createMethod, mock.Anything, mock.MatchedBy(func(arg any) bool {
+		return createdOU(arg) == ouID
+	})).Return(kind.created, (*tidcommon.ServiceError)(nil)).Once()
+}
+
+// expectExisting expects the service to hold the connection of the document, owned by the given organization unit.
+func (s *ImportConnectionOUTestSuite) expectExisting(kind connectionKind, ouID string) {
+	kind.service().On(kind.getMethod, mock.Anything, "conn-1").
+		Return(kind.stored(ouID), (*tidcommon.ServiceError)(nil)).Once()
+}
+
+// kinds returns the three kinds of connection the importer drives, each over the suite's mocks.
+func (s *ImportConnectionOUTestSuite) kinds() []connectionKind {
+	return []connectionKind{
+		{
+			name: "identity provider",
+			doc: func(id, owner string) string {
+				return "resource_type: connection\n" + idLine(id) + "name: idp-one\ntype: google\n" + owner +
+					"clientId: abc\n"
+			},
+			service:       func() *mock.Mock { return &s.idpService.Mock },
+			resolveMethod: "ResolveIdentityProviderOU", createMethod: "CreateIdentityProvider",
+			getMethod: "GetIdentityProvider",
+			created:   &providers.IDPDTO{ID: "idp-new", Name: "idp-one"},
+			stored: func(ouID string) any {
+				return &providers.IDPDTO{ID: "conn-1", Name: "idp-one", OUID: ouID}
+			},
+			updateNotAllowedCode: idp.ErrorIDPOUUpdateNotAllowed.Code,
+		},
+		{
+			name: "notification sender",
+			doc: func(id, owner string) string {
+				return "resource_type: connection\n" + idLine(id) + "name: sms\ntype: twilio\n" + owner +
+					"accountSid: AC1\nauthToken: t\nsenderId: x\n"
+			},
+			service:       func() *mock.Mock { return &s.senderService.Mock },
+			resolveMethod: "ResolveSenderOU", createMethod: "CreateSender", getMethod: "GetSender",
+			created: &ncommon.NotificationSenderDTO{ID: "sender-new", Name: "sms"},
+			stored: func(ouID string) any {
+				return &ncommon.NotificationSenderDTO{ID: "conn-1", Name: "sms", OUID: ouID}
+			},
+			updateNotAllowedCode: notification.ErrorSenderOUUpdateNotAllowed.Code,
+		},
+		{
+			name: "AuthZEN PDP",
+			doc: func(id, owner string) string {
+				return "resource_type: connection\n" + idLine(id) + "name: pdp\ntype: authzen-pdp\n" + owner +
+					"endpoint: https://pdp.example.com\n"
+			},
+			service:       func() *mock.Mock { return &s.pdpService.Mock },
+			resolveMethod: "ResolveConnectionOU", createMethod: "CreateAuthZENPDPConnection",
+			getMethod: "GetAuthZENPDP",
+			created:   &authzenpdp.AuthZENPDPConnection{ID: "pdp-new", Name: "pdp"},
+			stored: func(ouID string) any {
+				return &authzenpdp.AuthZENPDPConnection{ID: "conn-1", Name: "pdp", OUID: ouID}
+			},
+			updateNotAllowedCode: connectionou.ErrorOUUpdateNotAllowed.Code,
+		},
+	}
+}
+
+// idLine is the id line of a connection document, which is empty for a document that has no id.
+func idLine(id string) string {
+	if id == "" {
+		return ""
+	}
+	return "id: " + id + "\n"
+}
+
+// importOne imports a document that holds one connection and returns its outcome.
+func (s *ImportConnectionOUTestSuite) importOne(content string, dryRun bool) ImportItemOutcome {
+	resp, err := s.svc.ImportResources(context.Background(), &ImportRequest{Content: content, DryRun: dryRun})
+	s.Require().Nil(err)
+	s.Require().Len(resp.Results, 1)
+	return resp.Results[0]
+}
+
+func (s *ImportConnectionOUTestSuite) TestOwnerIsResolvedByTheServiceOfTheKind() {
+	for _, kind := range s.kinds() {
+		s.Run(kind.name, func() {
+			s.SetupTest()
+			s.expectResolve(kind, ownerCall{wantHandle: "default", setOUID: "ou-default"})
+			s.expectCreate(kind, "ou-default")
+
+			outcome := s.importOne(kind.doc("", "ouHandle: default\n"), false)
+
+			s.Equal(statusSuccess, outcome.Status)
+			s.Equal(operationCreate, outcome.Operation)
+		})
+	}
+}
+
+func (s *ImportConnectionOUTestSuite) TestOUIDAndHandleAreBothHandedToTheService() {
+	for _, kind := range s.kinds() {
+		s.Run(kind.name, func() {
+			s.SetupTest()
+			s.expectResolve(kind, ownerCall{wantOUID: "ou-other", wantHandle: "default"})
+			s.expectCreate(kind, "ou-other")
+
+			outcome := s.importOne(kind.doc("", "ouId: ou-other\nouHandle: default\n"), false)
+
+			s.Equal(statusSuccess, outcome.Status)
+		})
+	}
+}
+
+func (s *ImportConnectionOUTestSuite) TestOwnerTheServiceCannotResolveFailsTheItem() {
+	for _, kind := range s.kinds() {
+		for _, dryRun := range []bool{false, true} {
+			s.Run(fmt.Sprintf("%s dry run %t", kind.name, dryRun), func() {
+				s.SetupTest()
+				s.expectResolve(kind, ownerCall{wantHandle: "missing", svcErr: &connectionou.ErrorInvalidOU})
+
+				outcome := s.importOne(kind.doc("", "ouHandle: missing\n"), dryRun)
+
+				s.Equal(statusFailed, outcome.Status)
+				s.Equal(connectionou.ErrorInvalidOU.Code, outcome.Code)
+			})
+		}
+	}
+}
+
+func (s *ImportConnectionOUTestSuite) TestDryRunRefusesToMoveAnExistingConnection() {
+	for _, kind := range s.kinds() {
+		s.Run(kind.name, func() {
+			s.SetupTest()
+			s.expectResolve(kind, ownerCall{wantOUID: "ou-2"})
+			s.expectExisting(kind, "ou-1")
+
+			outcome := s.importOne(kind.doc("conn-1", "ouId: ou-2\n"), true)
+
+			s.Equal(statusFailed, outcome.Status)
+			s.Equal(kind.updateNotAllowedCode, outcome.Code)
+		})
+	}
+}
+
+func (s *ImportConnectionOUTestSuite) TestDryRunAcceptsTheOwnerAnExistingConnectionHas() {
+	for _, kind := range s.kinds() {
+		s.Run(kind.name, func() {
+			s.SetupTest()
+			s.expectResolve(kind, ownerCall{wantOUID: "ou-1"})
+			s.expectExisting(kind, "ou-1")
+
+			outcome := s.importOne(kind.doc("conn-1", "ouId: ou-1\n"), true)
+
+			s.Equal(statusSuccess, outcome.Status)
+			s.Equal(operationUpdate, outcome.Operation)
+		})
+	}
+}
+
+const httpConnectionImportDoc = `resource_type: connection
+id: http-1
+type: http
+name: Risk Engine
+url: %s
+timeoutMs: 5000
+authentication:
+  type: basic
+  properties:
+    username: svc-user
+%s`
+
+const (
+	httpImportURL          = "https://risk.example.com/evaluate"
+	httpImportPasswordLine = "    password: doc-pw\n"
+)
+
+type ImportHTTPConnectionTestSuite struct {
+	suite.Suite
+	adapter *httpConnectionAdapterMock
+	svc     ImportServiceInterface
+}
+
+func TestImportHTTPConnectionTestSuite(t *testing.T) {
+	suite.Run(t, new(ImportHTTPConnectionTestSuite))
+}
+
+func (s *ImportHTTPConnectionTestSuite) SetupTest() {
+	s.adapter = newHttpConnectionAdapterMock(s.T())
+	s.svc = s.newService(nil, nil, s.adapter)
+}
+
+// newService builds an import service over the connection adapters an HTTP connection test reaches.
+func (s *ImportHTTPConnectionTestSuite) newService(idpSvc idpAdapter, senderSvc senderAdapter,
+	httpSvc httpConnectionAdapter) ImportServiceInterface {
+	svc := newImportService(newAppService(), idpSvc, senderSvc, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+		nil, nil, nil, nil, nil, nil, nil, nil)
+	svc.(*importService).httpConnectionService = httpSvc
+	return svc
+}
+
+func (s *ImportHTTPConnectionTestSuite) importHTTPConnection(url, passwordLine string, dryRun bool) ImportItemOutcome {
+	s.T().Helper()
+	resp, err := s.svc.ImportResources(context.Background(), &ImportRequest{
+		Content: fmt.Sprintf(httpConnectionImportDoc, url, passwordLine),
+		DryRun:  dryRun,
+		Options: &ImportOptions{Upsert: boolPtr(true), ContinueOnError: boolPtr(true), Target: importTargetRuntime},
+	})
+	s.Require().Nil(err)
+	s.Require().Len(resp.Results, 1)
+	return resp.Results[0]
+}
+
+func (s *ImportHTTPConnectionTestSuite) storedPassword(props []cmodels.Property) string {
+	s.T().Helper()
+	authConfig, err := outboundauth.FromProperties(props)
+	s.Require().NoError(err)
+	return authConfig.Get(outboundauth.FieldBasicPassword)
+}
+
+func (s *ImportHTTPConnectionTestSuite) stored() *httpconnection.HTTPConnection {
+	authProps, err := outboundauth.ToProperties(outboundauth.Config{Type: outboundauth.TypeBasic,
+		Properties: map[string]string{
+			outboundauth.FieldBasicUsername: "svc-user",
+			outboundauth.FieldBasicPassword: "stored-pw",
+		}})
+	s.Require().NoError(err)
+	return &httpconnection.HTTPConnection{ID: "http-1", Name: "Risk Engine", URL: httpImportURL,
+		AuthProperties: authProps}
+}
+
+// Flows reference a connection by ID, so an imported one must keep the document's.
+func (s *ImportHTTPConnectionTestSuite) TestCreateKeepsTheDocumentID() {
+	s.adapter.EXPECT().GetHTTPConnection(mock.Anything, "http-1").Return(nil, &httpconnection.ErrorNotFound)
+	var created httpconnection.HTTPConnection
+	s.adapter.EXPECT().CreateHTTPConnection(mock.Anything, mock.Anything).
+		Run(func(_ context.Context, connection httpconnection.HTTPConnection) { created = connection }).
+		Return(&httpconnection.HTTPConnection{ID: "http-1", Name: "Risk Engine"}, nil)
+
+	outcome := s.importHTTPConnection(httpImportURL, httpImportPasswordLine, false)
+
+	s.Equal(statusSuccess, outcome.Status, outcome.Message)
+	s.Equal(operationCreate, outcome.Operation)
+	s.Equal("http-1", created.ID)
+	s.NotContains(fmt.Sprint(created.AuthProperties), "doc-pw")
+	s.Equal("doc-pw", s.storedPassword(created.AuthProperties))
+}
+
+// An upsert hands the writer the connection it read, so the retention rule is applied against it.
+func (s *ImportHTTPConnectionTestSuite) TestAnUpsertUpdatesTheConnectionItRead() {
+	stored := s.stored()
+	s.adapter.EXPECT().GetHTTPConnection(mock.Anything, "http-1").Return(stored, nil)
+	var updated httpconnection.HTTPConnection
+	s.adapter.EXPECT().UpdateHTTPConnection(mock.Anything, stored, mock.Anything).
+		Run(func(_ context.Context, _ *httpconnection.HTTPConnection, connection httpconnection.HTTPConnection) {
+			updated = connection
+		}).Return(stored, nil)
+
+	outcome := s.importHTTPConnection("https://risk.example.com/v2", "", false)
+
+	s.Equal(statusSuccess, outcome.Status, outcome.Message)
+	s.Equal(operationUpdate, outcome.Operation)
+	s.Equal("https://risk.example.com/v2", updated.URL)
+	s.Empty(s.storedPassword(updated.AuthProperties), "the document's omission is the writer's to resolve")
+}
+
+func (s *ImportHTTPConnectionTestSuite) TestDryRunWritesNothing() {
+	stored := s.stored()
+	s.adapter.EXPECT().GetHTTPConnection(mock.Anything, "http-1").Return(stored, nil)
+	s.adapter.EXPECT().ValidateHTTPConnectionUpdate(mock.Anything, stored, mock.Anything).Return(nil)
+
+	outcome := s.importHTTPConnection(httpImportURL, httpImportPasswordLine, true)
+
+	s.Equal(statusSuccess, outcome.Status, outcome.Message)
+	s.Equal(operationUpdate, outcome.Operation)
+}
+
+func (s *ImportHTTPConnectionTestSuite) TestADryRunUpsertReportsTheUpdateRefusal() {
+	stored := s.stored()
+	s.adapter.EXPECT().GetHTTPConnection(mock.Anything, "http-1").Return(stored, nil)
+	s.adapter.EXPECT().ValidateHTTPConnectionUpdate(mock.Anything, stored, mock.Anything).
+		Return(&declarativeresource.ErrorDeclarativeResourceUpdateOperation)
+
+	outcome := s.importHTTPConnection(httpImportURL, httpImportPasswordLine, true)
+
+	s.Equal(statusFailed, outcome.Status)
+	s.Equal(operationUpdate, outcome.Operation)
+	s.Equal(declarativeresource.ErrorDeclarativeResourceUpdateOperation.Code, outcome.Code)
+}
+
+func (s *ImportHTTPConnectionTestSuite) TestADryRunCreateReportsTheValidationRefusal() {
+	s.adapter.EXPECT().GetHTTPConnection(mock.Anything, "http-1").Return(nil, &httpconnection.ErrorNotFound)
+	s.adapter.EXPECT().ValidateHTTPConnectionCreate(mock.Anything, mock.Anything).
+		Return(&httpconnection.ErrorInvalidURL)
+
+	outcome := s.importHTTPConnection("http://risk.example.com/evaluate", httpImportPasswordLine, true)
+
+	s.Equal(statusFailed, outcome.Status)
+	s.Equal(operationCreate, outcome.Operation)
+	s.Equal(httpconnection.ErrorInvalidURL.Code, outcome.Code)
+}
+
+func (s *ImportHTTPConnectionTestSuite) TestFailsWithoutTheAdapter() {
+	s.svc = s.newService(nil, nil, nil)
+
+	outcome := s.importHTTPConnection(httpImportURL, httpImportPasswordLine, false)
+
+	s.Equal(statusFailed, outcome.Status)
+	s.Equal(ErrorInvalidImportRequest.Code, outcome.Code)
+}
+
+func (s *ImportHTTPConnectionTestSuite) TestReportsTheServiceRefusal() {
+	s.adapter.EXPECT().GetHTTPConnection(mock.Anything, "http-1").Return(nil, &httpconnection.ErrorNotFound)
+	s.adapter.EXPECT().CreateHTTPConnection(mock.Anything, mock.Anything).
+		Return(nil, &httpconnection.ErrorInvalidURL)
+
+	outcome := s.importHTTPConnection("http://risk.example.com/evaluate", httpImportPasswordLine, false)
+
+	s.Equal(statusFailed, outcome.Status)
+	s.Equal(httpconnection.ErrorInvalidURL.Code, outcome.Code)
+}
+
+func (s *ImportHTTPConnectionTestSuite) TestALookupFailureIsReportedWithoutWriting() {
+	s.adapter.EXPECT().GetHTTPConnection(mock.Anything, "http-1").Return(nil, &tidcommon.InternalServerError)
+
+	outcome := s.importHTTPConnection(httpImportURL, httpImportPasswordLine, false)
+
+	s.Equal(statusFailed, outcome.Status)
+	s.Equal(operationUpdate, outcome.Operation)
+	s.Equal(tidcommon.InternalServerError.Code, outcome.Code)
 }

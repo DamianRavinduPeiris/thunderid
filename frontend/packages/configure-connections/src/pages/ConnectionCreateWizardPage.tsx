@@ -21,17 +21,20 @@ import TrustedIssuerCreateForm from '../components/TrustedIssuerCreateForm';
 import {CONNECTION_FORM_FIELDS, fieldsForMode} from '../config/connectionFormFields';
 import {VENDOR_META_BY_TYPE} from '../config/connectionVendorMeta';
 import {POLICY_DECISION_POINT_TYPE} from '../constants/connection-wizard';
+import useCallerOuId from '../hooks/useCallerOuId';
 import useConnectionRoutes from '../hooks/useConnectionRoutes';
 import {
   type ConnectionResponse,
   type ConnectionType,
   ConnectionTypes,
+  type CreateConnectionRequest,
   type OutboundAuthMethod,
 } from '../models/connection';
 import {
   AUTH_ADDITIONAL_PROPERTIES_FIELD,
   AUTH_TYPE_FIELD,
   authenticationAdditionalPropertiesError,
+  authPropertyField,
   type ConnectionFormValues,
   emptyFormValues,
   formValuesToRequest,
@@ -59,6 +62,9 @@ export default function ConnectionCreateWizardPage(): JSX.Element {
   const [editedValues, setEditedValues] = useState<ConnectionFormValues>({});
   const [nameError, setNameError] = useState<string | null>(null);
   const [generalError, setGeneralError] = useState<string | null>(null);
+
+  // A new connection is owned by the organization unit of the signed-in user, read from their token.
+  const {ouId, isLoading: isOuLoading} = useCallerOuId();
 
   const isTrustedIdp: boolean = selectedType === 'trusted-idp';
   const isAuthZENPDP: boolean = selectedType === ConnectionTypes.AUTHZEN_PDP;
@@ -102,9 +108,13 @@ export default function ConnectionCreateWizardPage(): JSX.Element {
   const additionalPropertiesMissing: boolean =
     Boolean(selectedAuthenticationMethod?.additionalProperties?.required) &&
     decodeKeyValuePairs(values[AUTH_ADDITIONAL_PROPERTIES_FIELD] ?? '', 'pairs').length === 0;
+  const requiredAuthenticationFieldMissing: boolean = (selectedAuthenticationMethod?.fields ?? []).some(
+    (field) => field.required && (values[authPropertyField(field.key)] ?? '').trim() === '',
+  );
   const formValid: boolean =
     Object.keys(formErrors).length === 0 &&
     !additionalPropertiesMissing &&
+    !requiredAuthenticationFieldMissing &&
     !authenticationAdditionalPropertiesError(values, authenticationMethods);
   // The name is entered on its own step, so a format rule on it is reported there.
   const nameFormatError: string | null = trimmedName && formErrors['name'] ? t(formErrors['name']) : null;
@@ -146,11 +156,14 @@ export default function ConnectionCreateWizardPage(): JSX.Element {
     }
     setNameError(null);
     setGeneralError(null);
-    const payload = formValuesToRequest(values, fields, {
-      mode: 'create',
-      secretReplaced: true,
-      authenticationMethods,
-    });
+    const payload: CreateConnectionRequest = {
+      ...formValuesToRequest(values, fields, {
+        mode: 'create',
+        secretReplaced: true,
+        authenticationMethods,
+      }),
+      ouId,
+    };
     createMutation.mutate(payload, {
       onSuccess: (created: ConnectionResponse) => void navigate(routes.connections.detail(activeType, created.id)),
       onError: (error: Error) => {
@@ -249,7 +262,7 @@ export default function ConnectionCreateWizardPage(): JSX.Element {
         </Button>
         <Button
           variant="contained"
-          disabled={!formValid || createMutation.isPending}
+          disabled={!formValid || !ouId || createMutation.isPending}
           onClick={handleCreate}
           data-testid="wizard-create"
         >
@@ -294,6 +307,7 @@ export default function ConnectionCreateWizardPage(): JSX.Element {
       {step === Step.CONFIGURE && isTrustedIdp && (
         <TrustedIssuerCreateForm
           name={trimmedName}
+          ouId={ouId}
           onNameConflict={bounceToNameStep}
           onBack={() => setStep(Step.NAME)}
         />
@@ -344,6 +358,15 @@ export default function ConnectionCreateWizardPage(): JSX.Element {
               onSecretReplacingChange={() => undefined}
             />
           </Paper>
+
+          {!isOuLoading && !ouId && (
+            <Alert severity="error" data-testid="wizard-ou-required">
+              {t(
+                'wizard.organizationUnit.required',
+                'Your session does not name an organization unit. Sign out and sign in again.',
+              )}
+            </Alert>
+          )}
 
           {generalError && (
             <Alert severity="error" onClose={clearCreateError}>

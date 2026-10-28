@@ -63,15 +63,18 @@ paths:
                 connections:
                   - id: "a1b2c3d4-0000-0000-0000-000000000001"
                     name: "My Google"
+                    ouId: "01900000-0000-7000-8000-000000000001"
                     type: "google"
                     categories: ["identity-provider"]
                   - id: "a1b2c3d4-0000-0000-0000-000000000002"
                     name: "Corp OIDC"
                     description: "Corporate login"
+                    ouId: "01900000-0000-7000-8000-000000000001"
                     type: "oidc"
                     categories: ["identity-provider"]
                   - id: "a1b2c3d4-0000-0000-0000-000000000003"
                     name: "Twilio SMS"
+                    ouId: "01900000-0000-7000-8000-000000000001"
                     type: "twilio"
                     categories: ["sms-provider"]
                 links: []
@@ -174,6 +177,7 @@ paths:
       summary: List configured HTTP endpoint connections
       responses:
         "200": { $ref: '#/components/responses/HTTPConnectionInstanceList' }
+        "400": { $ref: '#/components/responses/HTTPConnectionListBadRequest' }
         "401": { $ref: '#/components/responses/Unauthorized' }
         "403": { $ref: '#/components/responses/Forbidden' }
         "500": { $ref: '#/components/responses/InternalServerError' }
@@ -187,6 +191,7 @@ paths:
             schema: { $ref: '#/components/schemas/HTTPConnectionCreateRequest' }
             example:
               name: "Risk Engine"
+              ouId: "01900000-0000-7000-8000-000000000001"
               url: "https://risk.example.com/evaluate"
       responses:
         "201":
@@ -220,11 +225,13 @@ paths:
       tags: [Connections]
       summary: Update an HTTP endpoint connection
       description: |
-        Replaces the connection. A credential omitted from `authentication.properties` keeps its
-        stored value only while the authentication `type`, its non-secret properties (such as the
+        Replaces the connection. An omitted `basic` password or `bearer` token keeps its stored
+        value only while the authentication `type`, its non-secret properties (such as the
         username) and the URL origin (scheme, host and port, with default ports normalized) are
         unchanged. Otherwise the credential is discarded and must be supplied again, so a
-        connection cannot be pointed at another server with its stored password.
+        connection cannot be pointed at another server with its stored password. Each `api_key`
+        header is sent on its own: a header sent as `"******"` keeps its stored value under the
+        same rule, and a header left out is removed.
       requestBody:
         required: true
         content:
@@ -245,8 +252,25 @@ paths:
     delete:
       tags: [Connections]
       summary: Delete an HTTP endpoint connection
+      description: |
+        Refused while other resources use the connection, and while its usages cannot be determined.
+        Deleting a connection that does not exist succeeds.
       responses:
         "204": { description: Connection deleted }
+        "400": { $ref: '#/components/responses/HTTPConnectionDeleteBadRequest' }
+        "409": { $ref: '#/components/responses/HTTPConnectionDependencyConflict' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "500": { $ref: '#/components/responses/InternalServerError' }
+  /connections/http/{id}/usages:
+    parameters:
+      - { $ref: '#/components/parameters/ConnectionID' }
+    get:
+      tags: [Connections]
+      summary: Get HTTP endpoint connection usages
+      description: Returns the resources that use this HTTP endpoint connection.
+      responses:
+        "200": { $ref: '#/components/responses/ConnectionUsages' }
         "404": { $ref: '#/components/responses/HTTPConnectionNotFound' }
         "401": { $ref: '#/components/responses/Unauthorized' }
         "403": { $ref: '#/components/responses/Forbidden' }
@@ -1359,6 +1383,52 @@ components:
                 description:
                   key: "error.connectionservice.invalid_authentication_type_description"
                   defaultValue: "The authentication type must name a method this deployment supports"
+            declarative-create:
+              summary: Create refused while HTTP connections are declarative (POST)
+              value:
+                code: "DCR-1001"
+                message:
+                  key: "error.declarative_resource.create_operation_not_allowed"
+                  defaultValue: "Declarative resource create operation is not allowed"
+                description:
+                  key: "error.declarative_resource.create_operation_not_allowed_description"
+                  defaultValue: "Creating declarative resources is not permitted"
+            declarative-update:
+              summary: Update of a declarative connection (PUT)
+              value:
+                code: "DCR-1002"
+                message:
+                  key: "error.declarative_resource.update_operation_not_allowed"
+                  defaultValue: "Declarative resource update operation is not allowed"
+                description:
+                  key: "error.declarative_resource.update_operation_not_allowed_description"
+                  defaultValue: "Updating declarative resources is not permitted"
+    HTTPConnectionDeleteBadRequest:
+      description: The HTTP endpoint connection is declarative and cannot be deleted
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            code: "DCR-1003"
+            message:
+              key: "error.declarative_resource.delete_operation_not_allowed"
+              defaultValue: "Declarative resource delete operation is not allowed"
+            description:
+              key: "error.declarative_resource.delete_operation_not_allowed_description"
+              defaultValue: "Deleting declarative resources is not permitted"
+    HTTPConnectionListBadRequest:
+      description: The HTTP endpoint connections exceed the composite-mode record limit
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            code: "CON-1027"
+            message:
+              key: "error.connectionservice.http_connection_result_limit_exceeded"
+              defaultValue: "Result limit exceeded in composite mode"
+            description:
+              key: "error.connectionservice.http_connection_result_limit_exceeded_description"
+              defaultValue: "The total number of HTTP connections exceeds the maximum limit in composite mode"
     HTTPConnectionConflict:
       description: An HTTP endpoint connection with the same name already exists
       content:
@@ -1385,6 +1455,19 @@ components:
             description:
               key: "error.connectionservice.http_connection_not_found_description"
               defaultValue: "No HTTP connection exists for the supplied identifier"
+    HTTPConnectionDependencyConflict:
+      description: The HTTP endpoint connection cannot be deleted because other resources use it
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            code: "CON-1026"
+            message:
+              key: "error.connectionservice.http_connection_has_blocking_dependencies"
+              defaultValue: "HTTP connection cannot be deleted"
+            description:
+              key: "error.connectionservice.http_connection_has_blocking_dependencies_description"
+              defaultValue: "The HTTP connection cannot be deleted because 1 flow(s) depend on it. Remove or reassign them first."
     ConnectionDependencyConflict:
       description: The connection cannot be deleted because it is still in use
       content:
@@ -1414,6 +1497,21 @@ components:
                 description:
                   key: "error.idpservice.invalid_request_format_description"
                   defaultValue: "The request body is malformed or contains invalid data"
+            organization-unit-required:
+              summary: No organization unit given on create
+              description: >-
+                Every connection is created in an organization unit. The code depends on the kind of connection:
+                `IDP-1016` for an identity provider, `MNS-1020` for an SMS or email connection and `CON-1025` for an
+                AuthZEN PDP or HTTP connection. An organization unit that does not exist is `IDP-1014`, `MNS-1018`
+                or `CON-1023`, and an attempt to change it on update is `IDP-1015`, `MNS-1019` or `CON-1024`.
+              value:
+                code: "CON-1025"
+                message:
+                  key: "error.connectionservice.connection_ou_required"
+                  defaultValue: "Organization unit required"
+                description:
+                  key: "error.connectionservice.connection_ou_required_description"
+                  defaultValue: "A connection needs an organization unit. Give its ouId in the request"
     NotFound:
       description: Connection not found
       content:
@@ -1504,11 +1602,16 @@ components:
 
     ConnectionInstance:
       type: object
-      required: [id, name, type, categories]
+      required: [id, name, ouId, type, categories]
       properties:
         id: { type: string, format: uuid }
         name: { type: string, example: "My Google" }
         description: { type: string }
+        ouId:
+          type: string
+          description: >-
+            ID of the organization unit that owns the connection. Every kind of connection has one.
+          example: "01900000-0000-7000-8000-000000000001"
         type:
           type: string
           description: >-
@@ -1605,6 +1708,13 @@ components:
       properties:
         name: { type: string, example: "My Google" }
         description: { type: string }
+        ouId:
+          type: string
+          description: >-
+            ID of the organization unit that owns the connection. Required when the connection is created (IDP-1016), and
+            the organization unit has to exist (IDP-1014). It cannot be changed afterwards: on an update, leave it out
+            to keep the owner, or give the one the connection has (IDP-1015).
+          example: "01900000-0000-7000-8000-000000000001"
         clientId: { type: string }
         clientSecret: { type: string, description: "Write-only. Omit to keep the stored value on update." }
         redirectUri: { type: string }
@@ -1618,13 +1728,19 @@ components:
       allOf:
         - $ref: '#/components/schemas/GoogleConnectionUpdateRequest'
         - type: object
-          required: [clientSecret]
+          required: [ouId, clientSecret]
     GoogleConnectionResponse:
       type: object
+      required: [ouId]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
         description: { type: string }
+        ouId:
+          type: string
+          description: >-
+            ID of the organization unit that owns the connection.
+          example: "01900000-0000-7000-8000-000000000001"
         type: { type: string, example: "google" }
         clientId: { type: string }
         clientSecret: { type: string, description: "Masked as \"******\".", example: "******" }
@@ -1642,6 +1758,13 @@ components:
       properties:
         name: { type: string, example: "My GitHub" }
         description: { type: string }
+        ouId:
+          type: string
+          description: >-
+            ID of the organization unit that owns the connection. Required when the connection is created (IDP-1016), and
+            the organization unit has to exist (IDP-1014). It cannot be changed afterwards: on an update, leave it out
+            to keep the owner, or give the one the connection has (IDP-1015).
+          example: "01900000-0000-7000-8000-000000000001"
         clientId: { type: string }
         clientSecret: { type: string, description: "Write-only. Omit to keep the stored value on update." }
         redirectUri: { type: string }
@@ -1652,13 +1775,19 @@ components:
       allOf:
         - $ref: '#/components/schemas/GitHubConnectionUpdateRequest'
         - type: object
-          required: [clientSecret]
+          required: [ouId, clientSecret]
     GitHubConnectionResponse:
       type: object
+      required: [ouId]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
         description: { type: string }
+        ouId:
+          type: string
+          description: >-
+            ID of the organization unit that owns the connection.
+          example: "01900000-0000-7000-8000-000000000001"
         type: { type: string, example: "github" }
         clientId: { type: string }
         clientSecret: { type: string, example: "******" }
@@ -1673,6 +1802,13 @@ components:
       properties:
         name: { type: string }
         description: { type: string }
+        ouId:
+          type: string
+          description: >-
+            ID of the organization unit that owns the connection. Required when the connection is created (IDP-1016), and
+            the organization unit has to exist (IDP-1014). It cannot be changed afterwards: on an update, leave it out
+            to keep the owner, or give the one the connection has (IDP-1015).
+          example: "01900000-0000-7000-8000-000000000001"
         clientId: { type: string }
         clientSecret: { type: string, description: "Write-only. Omit to keep the stored value on update." }
         redirectUri: { type: string }
@@ -1691,13 +1827,19 @@ components:
       allOf:
         - $ref: '#/components/schemas/OIDCConnectionUpdateRequest'
         - type: object
-          required: [clientSecret]
+          required: [ouId, clientSecret]
     OIDCConnectionResponse:
       type: object
+      required: [ouId]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
         description: { type: string }
+        ouId:
+          type: string
+          description: >-
+            ID of the organization unit that owns the connection.
+          example: "01900000-0000-7000-8000-000000000001"
         type: { type: string, example: "oidc" }
         clientId: { type: string }
         clientSecret: { type: string, example: "******" }
@@ -1725,6 +1867,13 @@ components:
       properties:
         name: { type: string }
         description: { type: string }
+        ouId:
+          type: string
+          description: >-
+            ID of the organization unit that owns the connection. Required when the connection is created (IDP-1016), and
+            the organization unit has to exist (IDP-1014). It cannot be changed afterwards: on an update, leave it out
+            to keep the owner, or give the one the connection has (IDP-1015).
+          example: "01900000-0000-7000-8000-000000000001"
         clientId: { type: string }
         clientSecret: { type: string, description: "Write-only. Omit to keep the stored value on update." }
         redirectUri: { type: string }
@@ -1738,13 +1887,19 @@ components:
       allOf:
         - $ref: '#/components/schemas/OAuthConnectionUpdateRequest'
         - type: object
-          required: [clientSecret]
+          required: [ouId, clientSecret]
     OAuthConnectionResponse:
       type: object
+      required: [ouId]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
         description: { type: string }
+        ouId:
+          type: string
+          description: >-
+            ID of the organization unit that owns the connection.
+          example: "01900000-0000-7000-8000-000000000001"
         type: { type: string, example: "oauth" }
         clientId: { type: string }
         clientSecret: { type: string, example: "******" }
@@ -1769,6 +1924,13 @@ components:
       properties:
         name: { type: string, example: "Travel Booking PDP" }
         description: { type: string }
+        ouId:
+          type: string
+          description: >-
+            ID of the organization unit that owns the connection. Required when the connection is created, and the
+            organization unit has to exist. It cannot be changed afterwards: on an update, leave it out to keep the
+            owner, or give the one the connection has.
+          example: "01900000-0000-7000-8000-000000000001"
         endpoint:
           type: string
           format: uri
@@ -1795,13 +1957,21 @@ components:
           type: array
           items: { $ref: '#/components/schemas/AuthZENPDPSubjectAttributeMapping' }
     AuthZENPDPConnectionCreateRequest:
-      $ref: '#/components/schemas/AuthZENPDPConnectionUpdateRequest'
+      allOf:
+        - $ref: '#/components/schemas/AuthZENPDPConnectionUpdateRequest'
+        - type: object
+          required: [ouId]
     AuthZENPDPConnectionResponse:
       allOf:
         - type: object
-          required: [id, type]
+          required: [id, ouId, type]
           properties:
             id: { type: string, format: uuid }
+            ouId:
+              type: string
+              description: >-
+                ID of the organization unit that owns the connection.
+              example: "01900000-0000-7000-8000-000000000001"
             type: { type: string, enum: [authzen-pdp] }
             authentication:
               $ref: '#/components/schemas/OutboundAuthentication'
@@ -1837,6 +2007,13 @@ components:
           description: Unique per deployment.
           example: "Risk Engine"
         description: { type: string, maxLength: 500 }
+        ouId:
+          type: string
+          description: >-
+            ID of the organization unit that owns the connection. Required when the connection is created, and the
+            organization unit has to exist. It cannot be changed afterwards: on an update, leave it out to keep the
+            owner, or give the one the connection has.
+          example: "01900000-0000-7000-8000-000000000001"
         url:
           type: string
           format: uri
@@ -1889,14 +2066,22 @@ components:
             properties:
               X-Tenant-Key: "<tenant_key>"
     HTTPConnectionCreateRequest:
-      $ref: '#/components/schemas/HTTPConnectionUpdateRequest'
+      allOf:
+        - $ref: '#/components/schemas/HTTPConnectionUpdateRequest'
+        - type: object
+          required: [ouId]
     HTTPConnectionResponse:
       type: object
-      required: [id, name, type, url, timeoutMs, headers, authentication]
+      required: [ouId, id, name, type, url, timeoutMs, headers, authentication]
       properties:
         id: { type: string, format: uuid }
         name: { type: string, example: "Risk Engine" }
         description: { type: string }
+        ouId:
+          type: string
+          description: >-
+            ID of the organization unit that owns the connection.
+          example: "01900000-0000-7000-8000-000000000001"
         type: { type: string, enum: [http] }
         url: { type: string, example: "https://risk.example.com/evaluate" }
         timeoutMs: { type: integer, example: 10000 }
@@ -1907,6 +2092,7 @@ components:
       example:
         id: "0199d1f4-6a1e-7c3b-9f2a-1b2c3d4e5f60"
         name: "Risk Engine"
+        ouId: "01900000-0000-7000-8000-000000000001"
         type: "http"
         url: "https://risk.example.com/evaluate"
         timeoutMs: 5000
@@ -1930,6 +2116,13 @@ components:
       properties:
         name: { type: string, example: "My Twilio" }
         description: { type: string }
+        ouId:
+          type: string
+          description: >-
+            ID of the organization unit that owns the connection. Required when the connection is created, and the
+            organization unit has to exist. It cannot be changed afterwards: on an update, leave it out to keep the
+            owner, or give the one the connection has.
+          example: "01900000-0000-7000-8000-000000000001"
         accountSid: { type: string, description: "Twilio Account SID (AC followed by 32 hex characters).", example: "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" }
         authToken: { type: string, description: "Write-only. Omit to keep the stored value on update." }
         senderId: { type: string, description: "Sender phone number or alphanumeric sender ID.", example: "+15005550006" }
@@ -1937,13 +2130,19 @@ components:
       allOf:
         - $ref: '#/components/schemas/TwilioConnectionUpdateRequest'
         - type: object
-          required: [authToken]
+          required: [ouId, authToken]
     TwilioConnectionResponse:
       type: object
+      required: [ouId]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
         description: { type: string }
+        ouId:
+          type: string
+          description: >-
+            ID of the organization unit that owns the connection.
+          example: "01900000-0000-7000-8000-000000000001"
         type: { type: string, example: "twilio" }
         accountSid: { type: string }
         authToken: { type: string, description: "Masked as \"******\".", example: "******" }
@@ -1955,6 +2154,13 @@ components:
       properties:
         name: { type: string, example: "My Vonage" }
         description: { type: string }
+        ouId:
+          type: string
+          description: >-
+            ID of the organization unit that owns the connection. Required when the connection is created, and the
+            organization unit has to exist. It cannot be changed afterwards: on an update, leave it out to keep the
+            owner, or give the one the connection has.
+          example: "01900000-0000-7000-8000-000000000001"
         apiKey: { type: string, description: "Vonage API key." }
         apiSecret: { type: string, description: "Write-only. Omit to keep the stored value on update." }
         senderId: { type: string, description: "Sender phone number or alphanumeric sender ID.", example: "ThunderID" }
@@ -1962,13 +2168,19 @@ components:
       allOf:
         - $ref: '#/components/schemas/VonageConnectionUpdateRequest'
         - type: object
-          required: [apiSecret]
+          required: [ouId, apiSecret]
     VonageConnectionResponse:
       type: object
+      required: [ouId]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
         description: { type: string }
+        ouId:
+          type: string
+          description: >-
+            ID of the organization unit that owns the connection.
+          example: "01900000-0000-7000-8000-000000000001"
         type: { type: string, example: "vonage" }
         apiKey: { type: string }
         apiSecret: { type: string, description: "Masked as \"******\".", example: "******" }
@@ -1980,6 +2192,13 @@ components:
       properties:
         name: { type: string, example: "Prod SMS Gateway" }
         description: { type: string }
+        ouId:
+          type: string
+          description: >-
+            ID of the organization unit that owns the connection. Required when the connection is created, and the
+            organization unit has to exist. It cannot be changed afterwards: on an update, leave it out to keep the
+            owner, or give the one the connection has.
+          example: "01900000-0000-7000-8000-000000000001"
         url: { type: string, description: "The HTTP endpoint to call to send an SMS.", example: "https://sms.example.com/send" }
         httpMethod: { type: string, enum: [GET, POST], example: "POST" }
         httpHeaders:
@@ -1998,13 +2217,22 @@ components:
             their existing behavior and cannot use a header name also set by authentication.
         contentType: { type: string, enum: [JSON, FORM], example: "JSON" }
     SMSGatewayConnectionCreateRequest:
-      $ref: '#/components/schemas/SMSGatewayConnectionUpdateRequest'
+      allOf:
+        - $ref: '#/components/schemas/SMSGatewayConnectionUpdateRequest'
+        - type: object
+          required: [ouId]
     SMSGatewayConnectionResponse:
       type: object
+      required: [ouId]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
         description: { type: string }
+        ouId:
+          type: string
+          description: >-
+            ID of the organization unit that owns the connection.
+          example: "01900000-0000-7000-8000-000000000001"
         type: { type: string, example: "sms-gateway" }
         url: { type: string }
         httpMethod: { type: string }
@@ -2022,6 +2250,13 @@ components:
       properties:
         name: { type: string, example: "Corp SMTP" }
         description: { type: string }
+        ouId:
+          type: string
+          description: >-
+            ID of the organization unit that owns the connection. Required when the connection is created, and the
+            organization unit has to exist. It cannot be changed afterwards: on an update, leave it out to keep the
+            owner, or give the one the connection has.
+          example: "01900000-0000-7000-8000-000000000001"
         host: { type: string, description: "Hostname of the SMTP server.", example: "smtp.example.com" }
         port: { type: integer, minimum: 1, maximum: 65535, example: 587 }
         fromAddress: { type: string, format: email, description: "Address used in the From header and the SMTP envelope.", example: "noreply@example.com" }
@@ -2051,13 +2286,22 @@ components:
             Call `GET /connections/meta?vendor=email-smtp` for the methods this deployment supports
             and the fields each one takes.
     SMTPConnectionCreateRequest:
-      $ref: '#/components/schemas/SMTPConnectionUpdateRequest'
+      allOf:
+        - $ref: '#/components/schemas/SMTPConnectionUpdateRequest'
+        - type: object
+          required: [ouId]
     SMTPConnectionResponse:
       type: object
+      required: [ouId]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
         description: { type: string }
+        ouId:
+          type: string
+          description: >-
+            ID of the organization unit that owns the connection.
+          example: "01900000-0000-7000-8000-000000000001"
         type: { type: string, example: "email-smtp" }
         host: { type: string }
         port: { type: integer, example: 587 }
@@ -2076,7 +2320,8 @@ components:
 
         Credential values are stored encrypted and returned as `"******"`. On update, a masked
         value retains the matching stored credential while the connection target is unchanged.
-        For `api_key`, `properties` contains HTTP header names and values. Omitting a header
+        For `api_key`, `properties` contains HTTP header names and values; a header name cannot
+        contain a dot. Omitting a header
         from a supplied `api_key` block deletes it. Omitting the whole `authentication` block
         keeps the existing configuration. Setting `type` to `none` removes authentication.
       required: [type]
@@ -2296,7 +2541,9 @@ components:
             How the claim's value(s) are interpreted. Defaults to "string" (a single scalar value)
             when omitted. "array", or "string" combined with delimiter, is multi-valued and requires
             the includes/not_includes operators; every other combination is single-valued and
-            requires a different operator.
+            requires a different operator. "number" values are compared exactly when they have at
+            most 1024 characters and an exponent within ±400; beyond that they are compared as
+            64-bit floating-point numbers.
           enum: [string, number, boolean, array]
           default: "string"
           example: "array"

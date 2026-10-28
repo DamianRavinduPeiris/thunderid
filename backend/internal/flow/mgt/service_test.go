@@ -88,7 +88,7 @@ func (s *FlowMgtServiceTestSuite) SetupTest() {
 	s.mockResolver = newNotificationTemplateProviderMock(s.T())
 	s.service = newFlowMgtService(s.mockStore, s.mockInference, s.mockGraphBuilder,
 		s.mockExecutorRegistry, s.mockInterceptorRegistry, s.mockValidator, nil, &stubTransactioner{}, nil, nil,
-		s.mockResolver)
+		s.mockResolver, nil)
 
 	// UpdateFlow / DeleteFlow / RestoreFlowVersion invalidate the store cache post-transaction.
 	// The mock is applied here so individual tests don't need to repeat the expectation.
@@ -1641,7 +1641,7 @@ func (s *FlowMgtServiceTestSuite) TestTryInferRegistrationFlow_Success() {
 	mockInterceptorRegistry := interceptormock.NewInterceptorRegistryInterfaceMock(s.T())
 	mockValidator := NewFlowValidatorInterfaceMock(s.T())
 	service := newFlowMgtService(s.mockStore, s.mockInference, s.mockGraphBuilder,
-		mockExecutorRegistry, mockInterceptorRegistry, mockValidator, nil, &stubTransactioner{}, nil, nil, nil)
+		mockExecutorRegistry, mockInterceptorRegistry, mockValidator, nil, &stubTransactioner{}, nil, nil, nil, nil)
 
 	authFlowDef := &FlowDefinition{
 		Handle:   "auth-flow",
@@ -1703,7 +1703,7 @@ func (s *FlowMgtServiceTestSuite) TestTryInferRegistrationFlow_SkipsNonAuthFlow(
 	mockInterceptorRegistry := interceptormock.NewInterceptorRegistryInterfaceMock(s.T())
 	mockValidator := NewFlowValidatorInterfaceMock(s.T())
 	service := newFlowMgtService(s.mockStore, s.mockInference, s.mockGraphBuilder,
-		mockExecutorRegistry, mockInterceptorRegistry, mockValidator, nil, &stubTransactioner{}, nil, nil, nil)
+		mockExecutorRegistry, mockInterceptorRegistry, mockValidator, nil, &stubTransactioner{}, nil, nil, nil, nil)
 
 	regFlowDef := &FlowDefinition{
 		Handle:   "reg-flow",
@@ -1733,7 +1733,7 @@ func (s *FlowMgtServiceTestSuite) TestTryInferRegistrationFlow_HandlesInferenceE
 	mockInterceptorRegistry := interceptormock.NewInterceptorRegistryInterfaceMock(s.T())
 	mockValidator := NewFlowValidatorInterfaceMock(s.T())
 	service := newFlowMgtService(s.mockStore, s.mockInference, s.mockGraphBuilder,
-		mockExecutorRegistry, mockInterceptorRegistry, mockValidator, nil, &stubTransactioner{}, nil, nil, nil)
+		mockExecutorRegistry, mockInterceptorRegistry, mockValidator, nil, &stubTransactioner{}, nil, nil, nil, nil)
 
 	authFlowDef := &FlowDefinition{
 		Handle:   "auth-flow",
@@ -1765,7 +1765,7 @@ func (s *FlowMgtServiceTestSuite) TestTryInferRegistrationFlow_HandlesStoreError
 	mockInterceptorRegistry := interceptormock.NewInterceptorRegistryInterfaceMock(s.T())
 	mockValidator := NewFlowValidatorInterfaceMock(s.T())
 	service := newFlowMgtService(s.mockStore, s.mockInference, s.mockGraphBuilder,
-		mockExecutorRegistry, mockInterceptorRegistry, mockValidator, nil, &stubTransactioner{}, nil, nil, nil)
+		mockExecutorRegistry, mockInterceptorRegistry, mockValidator, nil, &stubTransactioner{}, nil, nil, nil, nil)
 
 	authFlowDef := &FlowDefinition{
 		Handle:   "auth-flow",
@@ -1807,7 +1807,7 @@ func (s *FlowMgtServiceTestSuite) TestTryInferRegistrationFlow_DisabledAutoInfer
 	mockInterceptorRegistry := interceptormock.NewInterceptorRegistryInterfaceMock(s.T())
 	mockValidator := NewFlowValidatorInterfaceMock(s.T())
 	service := newFlowMgtService(s.mockStore, s.mockInference, s.mockGraphBuilder,
-		mockExecutorRegistry, mockInterceptorRegistry, mockValidator, nil, &stubTransactioner{}, nil, nil, nil)
+		mockExecutorRegistry, mockInterceptorRegistry, mockValidator, nil, &stubTransactioner{}, nil, nil, nil, nil)
 
 	authFlowDef := &FlowDefinition{
 		Handle:   "auth-flow",
@@ -1837,7 +1837,7 @@ func (s *FlowMgtServiceTestSuite) TestTryInferRegistrationFlow_SkipsPasskeyRegis
 	mockInterceptorRegistry := interceptormock.NewInterceptorRegistryInterfaceMock(s.T())
 	mockValidator := NewFlowValidatorInterfaceMock(s.T())
 	service := newFlowMgtService(s.mockStore, s.mockInference, s.mockGraphBuilder,
-		mockExecutorRegistry, mockInterceptorRegistry, mockValidator, nil, &stubTransactioner{}, nil, nil, nil)
+		mockExecutorRegistry, mockInterceptorRegistry, mockValidator, nil, &stubTransactioner{}, nil, nil, nil, nil)
 
 	// Auth flow with PasskeyAuthExecutor in register_start and register_finish modes
 	authFlowDef := &FlowDefinition{
@@ -2082,6 +2082,67 @@ func (s *FlowMgtServiceTestSuite) TestGetResourceDependencies_FlowReferencesNoti
 	s.Equal("flow1", usages[0].ID)
 }
 
+func (s *FlowMgtServiceTestSuite) TestGetResourceDependencies_CountsAConnectionIDWithSurroundingWhitespace() {
+	s.mockStore.EXPECT().ListActiveFlowsWithNodes(mock.Anything).Return([]*providers.CompleteFlowDefinition{
+		{
+			ID:   "flow1",
+			Name: "Padded reference",
+			Nodes: []providers.NodeDefinition{
+				{ID: "risk", Type: "TASK_EXECUTION", Executor: &providers.ExecutorDefinition{Name: "ExtensionExecutor"},
+					Properties: map[string]interface{}{"connectionId": "  http-conn-1\t"}},
+			},
+		},
+	}, nil)
+
+	usages, err := s.service.GetResourceDependencies(
+		context.Background(), resourcedependency.ResourceTypeHTTPConnection, "http-conn-1")
+
+	s.NoError(err)
+	s.Require().Len(usages, 1)
+	s.Equal("flow1", usages[0].ID)
+}
+
+func (s *FlowMgtServiceTestSuite) TestGetResourceDependencies_ExtensionStepReferencesHTTPConnection() {
+	connectionID := "http-conn-1"
+	s.mockStore.EXPECT().ListActiveFlowsWithNodes(mock.Anything).Return([]*providers.CompleteFlowDefinition{
+		{
+			ID:   "flow1",
+			Name: "Default sign-in",
+			Nodes: []providers.NodeDefinition{
+				{ID: "risk", Type: "TASK_EXECUTION", Executor: &providers.ExecutorDefinition{Name: "ExtensionExecutor"},
+					Properties: map[string]interface{}{"connectionId": connectionID}},
+			},
+		},
+		{
+			ID:   "flow3",
+			Name: "Not an extension step",
+			Nodes: []providers.NodeDefinition{
+				{ID: "call", Type: "TASK_EXECUTION",
+					Executor:   &providers.ExecutorDefinition{Name: "HTTPRequestExecutor"},
+					Properties: map[string]interface{}{"connectionId": connectionID}},
+				{ID: "bare", Type: "TASK_EXECUTION", Properties: map[string]interface{}{"connectionId": connectionID}},
+			},
+		},
+		{
+			ID:   "flow2",
+			Name: "Other extension",
+			Nodes: []providers.NodeDefinition{
+				{ID: "risk", Type: "TASK_EXECUTION", Executor: &providers.ExecutorDefinition{Name: "ExtensionExecutor"},
+					Properties: map[string]interface{}{"connectionId": "other-conn"}},
+			},
+		},
+	}, nil)
+
+	usages, err := s.service.GetResourceDependencies(
+		context.Background(), resourcedependency.ResourceTypeHTTPConnection, connectionID)
+
+	s.NoError(err)
+	s.Equal([]resourcedependency.ResourceDependency{{
+		ResourceType: resourcedependency.ResourceTypeFlow, ID: "flow1", DisplayName: "Default sign-in",
+		BehaviorOnDelete: resourcedependency.BehaviorRestrict,
+	}}, usages)
+}
+
 func (s *FlowMgtServiceTestSuite) TestGetResourceDependencies_NoReferencingFlows() {
 	s.mockStore.EXPECT().ListActiveFlowsWithNodes(mock.Anything).Return([]*providers.CompleteFlowDefinition{
 		{ID: "flow1", Nodes: []providers.NodeDefinition{{ID: "start", Type: "START"}}},
@@ -2295,7 +2356,8 @@ func (s *FlowMgtServiceTestSuite) TestGetReachableCallTargets_StoreErrorMapsToIn
 
 func (s *FlowMgtServiceTestSuite) TestResolveEffectiveFlowID_OverriddenIDWins() {
 	svc := newFlowMgtService(s.mockStore, s.mockInference, s.mockGraphBuilder,
-		s.mockExecutorRegistry, s.mockInterceptorRegistry, s.mockValidator, nil, &stubTransactioner{}, nil, nil, nil)
+		s.mockExecutorRegistry, s.mockInterceptorRegistry, s.mockValidator, nil, &stubTransactioner{},
+		nil, nil, nil, nil)
 
 	id, svcErr := svc.ResolveEffectiveFlowID(
 		context.Background(), "override-id", "ou-1", providers.FlowTypeAuthentication)
@@ -2307,7 +2369,8 @@ func (s *FlowMgtServiceTestSuite) TestResolveEffectiveFlowID_OverriddenIDWins() 
 func (s *FlowMgtServiceTestSuite) TestResolveEffectiveFlowID_OUFlowIDUsedWhenNoOverride() {
 	mockOU := newOuProviderMock(s.T())
 	svc := newFlowMgtService(s.mockStore, s.mockInference, s.mockGraphBuilder,
-		s.mockExecutorRegistry, s.mockInterceptorRegistry, s.mockValidator, nil, &stubTransactioner{}, nil, mockOU, nil)
+		s.mockExecutorRegistry, s.mockInterceptorRegistry, s.mockValidator, nil, &stubTransactioner{},
+		nil, mockOU, nil, nil)
 
 	ou := ou.OrganizationUnit{AuthFlowID: "ou-auth-flow"}
 	mockOU.EXPECT().GetOrganizationUnit(mock.Anything, "ou-1").Return(ou, nil)
@@ -2323,7 +2386,7 @@ func (s *FlowMgtServiceTestSuite) TestResolveEffectiveFlowID_ServerDefaultUsedWh
 	mockSC := newServerConfigProviderMock(s.T())
 	svc := newFlowMgtService(s.mockStore, s.mockInference, s.mockGraphBuilder,
 		s.mockExecutorRegistry, s.mockInterceptorRegistry, s.mockValidator, nil, &stubTransactioner{},
-		mockSC, mockOU, nil)
+		mockSC, mockOU, nil, nil)
 
 	mockOU.EXPECT().GetOrganizationUnit(mock.Anything, "ou-1").Return(ou.OrganizationUnit{}, nil)
 
@@ -2348,7 +2411,8 @@ func (s *FlowMgtServiceTestSuite) TestResolveEffectiveFlowID_ServerDefaultUsedWh
 func (s *FlowMgtServiceTestSuite) TestResolveEffectiveFlowID_EmptyWhenNoDefaultConfigured() {
 	mockSC := newServerConfigProviderMock(s.T())
 	svc := newFlowMgtService(s.mockStore, s.mockInference, s.mockGraphBuilder,
-		s.mockExecutorRegistry, s.mockInterceptorRegistry, s.mockValidator, nil, &stubTransactioner{}, mockSC, nil, nil)
+		s.mockExecutorRegistry, s.mockInterceptorRegistry, s.mockValidator, nil, &stubTransactioner{},
+		mockSC, nil, nil, nil)
 
 	mockSC.EXPECT().GetMergedConfig(mock.Anything, "flow").Return(flowconfig.FlowSectionConfig{}, nil)
 
@@ -2363,7 +2427,7 @@ func (s *FlowMgtServiceTestSuite) TestResolveEffectiveFlowID_OULookupErrorFallsT
 	mockSC := newServerConfigProviderMock(s.T())
 	svc := newFlowMgtService(s.mockStore, s.mockInference, s.mockGraphBuilder,
 		s.mockExecutorRegistry, s.mockInterceptorRegistry, s.mockValidator, nil, &stubTransactioner{},
-		mockSC, mockOU, nil)
+		mockSC, mockOU, nil, nil)
 
 	mockOU.EXPECT().GetOrganizationUnit(mock.Anything, "ou-1").
 		Return(ou.OrganizationUnit{}, &tidcommon.InternalServerError)
@@ -2398,7 +2462,8 @@ func (s *FlowMgtServiceTestSuite) TestOUFlowIDForType_AllTypes() {
 
 func (s *FlowMgtServiceTestSuite) TestGetFlowSectionConfig_NilServerConfigSvc() {
 	svc := newFlowMgtService(s.mockStore, s.mockInference, s.mockGraphBuilder,
-		s.mockExecutorRegistry, s.mockInterceptorRegistry, s.mockValidator, nil, &stubTransactioner{}, nil, nil, nil)
+		s.mockExecutorRegistry, s.mockInterceptorRegistry, s.mockValidator, nil, &stubTransactioner{},
+		nil, nil, nil, nil)
 
 	cfg := svc.(*flowMgtService).getFlowSectionConfig(context.Background())
 
@@ -2408,7 +2473,8 @@ func (s *FlowMgtServiceTestSuite) TestGetFlowSectionConfig_NilServerConfigSvc() 
 func (s *FlowMgtServiceTestSuite) TestGetFlowSectionConfig_ServerConfigError() {
 	mockSC := newServerConfigProviderMock(s.T())
 	svc := newFlowMgtService(s.mockStore, s.mockInference, s.mockGraphBuilder,
-		s.mockExecutorRegistry, s.mockInterceptorRegistry, s.mockValidator, nil, &stubTransactioner{}, mockSC, nil, nil)
+		s.mockExecutorRegistry, s.mockInterceptorRegistry, s.mockValidator, nil, &stubTransactioner{},
+		mockSC, nil, nil, nil)
 
 	mockSC.EXPECT().GetMergedConfig(mock.Anything, "flow").Return(nil, &tidcommon.InternalServerError)
 
@@ -2420,7 +2486,8 @@ func (s *FlowMgtServiceTestSuite) TestGetFlowSectionConfig_ServerConfigError() {
 func (s *FlowMgtServiceTestSuite) TestGetFlowSectionConfig_WrongType() {
 	mockSC := newServerConfigProviderMock(s.T())
 	svc := newFlowMgtService(s.mockStore, s.mockInference, s.mockGraphBuilder,
-		s.mockExecutorRegistry, s.mockInterceptorRegistry, s.mockValidator, nil, &stubTransactioner{}, mockSC, nil, nil)
+		s.mockExecutorRegistry, s.mockInterceptorRegistry, s.mockValidator, nil, &stubTransactioner{},
+		mockSC, nil, nil, nil)
 
 	mockSC.EXPECT().GetMergedConfig(mock.Anything, "flow").Return("not-a-flow-section-config", nil)
 
@@ -2434,7 +2501,8 @@ func (s *FlowMgtServiceTestSuite) TestGetFlowSectionConfig_WrongType() {
 func (s *FlowMgtServiceTestSuite) TestResolveDefaultFlowHandle_AllFlowTypes() {
 	mockSC := newServerConfigProviderMock(s.T())
 	svc := newFlowMgtService(s.mockStore, s.mockInference, s.mockGraphBuilder,
-		s.mockExecutorRegistry, s.mockInterceptorRegistry, s.mockValidator, nil, &stubTransactioner{}, mockSC, nil, nil)
+		s.mockExecutorRegistry, s.mockInterceptorRegistry, s.mockValidator, nil, &stubTransactioner{},
+		mockSC, nil, nil, nil)
 
 	section := flowconfig.FlowSectionConfig{
 		AuthFlow:           flowconfig.FlowTypeConfig{DefaultHandle: "h-auth"},
